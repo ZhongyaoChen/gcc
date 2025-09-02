@@ -1120,12 +1120,25 @@
 
 (define_expand "abs<mode>2"
   [(set (match_operand:V_VLSI 0 "register_operand")
-    (smax:V_VLSI
-     (match_dup 0)
-     (neg:V_VLSI
-       (match_operand:V_VLSI 1 "register_operand"))))]
+	(abs:V_VLSI
+	  (match_operand:V_VLSI 1 "register_operand")))]
   "TARGET_VECTOR"
 {
+  if (TARGET_ZVABD)
+    {
+      riscv_vector::emit_vlmax_insn (CODE_FOR_pred_abs<mode>,
+				     riscv_vector::UNARY_OP, operands);
+      DONE;
+    }
+
+  rtx neg = gen_reg_rtx (<MODE>mode);
+  rtx ops1[] = {neg, operands[1]};
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_neg<mode>,
+				 riscv_vector::UNARY_OP, ops1);
+
+  rtx ops2[] = {operands[0], operands[1], neg};
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_smax<mode>,
+				 riscv_vector::BINARY_OP, ops2);
   DONE;
 })
 
@@ -3143,26 +3156,90 @@
 ; ========
 ; == Absolute difference (not including sum)
 ; ========
-(define_expand "uabd<mode>3"
-  [(match_operand:V_VLSI 0 "register_operand")
-   (match_operand:V_VLSI 1 "register_operand")
-   (match_operand:V_VLSI 2 "register_operand")]
-  ;; Disabled until PR119224 is resolved
-  "TARGET_VECTOR && 0"
-  {
-    rtx max = gen_reg_rtx (<MODE>mode);
-    insn_code icode = code_for_pred (UMAX, <MODE>mode);
-    rtx ops1[] = {max, operands[1], operands[2]};
-    riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops1);
+(define_expand "<su>abd<mode>3"
+  [(set (match_operand:V_VLSI 0 "register_operand")
+	(unspec:V_VLSI
+	  [(match_operand:V_VLSI 1 "register_operand")
+	   (match_operand:V_VLSI 2 "register_operand")]
+	  UNSPEC_VABD))]
+;; Disabled when zvabd not enabled until PR119224 is resolved.
+  "TARGET_VECTOR && TARGET_ZVABD")
 
-    rtx min = gen_reg_rtx (<MODE>mode);
-    icode = code_for_pred (UMIN, <MODE>mode);
-    rtx ops2[] = {min, operands[1], operands[2]};
-    riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops2);
+(define_insn_and_split "*abd<su><mode>3"
+  [(set (match_operand:V_VLSI 0 "register_operand" "=vr")
+	(unspec:V_VLSI
+	  [(match_operand:V_VLSI 1 "register_operand" "vr")
+	   (match_operand:V_VLSI 2 "register_operand" "vr")]
+	  UNSPEC_VABD))]
+  "TARGET_VECTOR && (TARGET_ZVABD || can_create_pseudo_p ())"
+  "#"
+  "&& 1"
+  [(const_int 0)]
+{
+  if (TARGET_ZVABD)
+    riscv_vector::emit_vlmax_insn (CODE_FOR_pred_vabd<su><mode>,
+				  riscv_vector::BINARY_OP, operands);
+  else
+    {
+      rtx max = gen_reg_rtx (<MODE>mode);
+      insn_code icode = code_for_pred (<ABD_MAX>, <MODE>mode);
+      rtx ops1[] = {max, operands[1], operands[2]};
+      riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops1);
 
-    icode = code_for_pred (MINUS, <MODE>mode);
-    rtx ops3[] = {operands[0], max, min};
-    riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops3);
+      rtx min = gen_reg_rtx (<MODE>mode);
+      icode = code_for_pred (<ABD_MIN>, <MODE>mode);
+      rtx ops2[] = {min, operands[1], operands[2]};
+      riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops2);
 
-    DONE;
-  });
+      icode = code_for_pred (MINUS, <MODE>mode);
+      rtx ops3[] = {operands[0], max, min};
+      riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops3);
+    }
+  DONE;
+}
+[(set_attr "type" "vialu")])
+
+; ========
+; == Widening absolute difference and accumulate
+; ========
+(define_insn_and_split "*vwabdacc<su><mode>4"
+  [(set (match_operand:VWEXTI 0 "register_operand" "+&vr")
+	(plus:VWEXTI
+	  (zero_extend:VWEXTI
+	    (unspec:<V_DOUBLE_TRUNC>
+	      [(match_operand:<V_DOUBLE_TRUNC> 1 "register_operand" "vr")
+	       (match_operand:<V_DOUBLE_TRUNC> 2 "register_operand" "vr")]
+	      UNSPEC_VABD))
+	  (match_operand:VWEXTI 3 "register_operand" "0")))]
+  "TARGET_VECTOR && TARGET_ZVABD"
+  "#"
+  "&& 1"
+  [(const_int 0)]
+{
+  rtx ops[] = {operands[0], operands[1], operands[2]};
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_vwabdacc<su><mode>,
+				riscv_vector::BINARY_OP, ops);
+  DONE;
+}
+[(set_attr "type" "viwalu")])
+
+(define_insn_and_split "*vwabdacc_right<su><mode>4"
+  [(set (match_operand:VWEXTI 0 "register_operand" "+&vr")
+	(plus:VWEXTI
+	  (match_operand:VWEXTI 1 "register_operand" "0")
+	  (zero_extend:VWEXTI
+	    (unspec:<V_DOUBLE_TRUNC>
+	      [(match_operand:<V_DOUBLE_TRUNC> 2 "register_operand" "vr")
+	       (match_operand:<V_DOUBLE_TRUNC> 3 "register_operand" "vr")]
+	      UNSPEC_VABD))))]
+  "TARGET_VECTOR && TARGET_ZVABD"
+  "#"
+  "&& 1"
+  [(const_int 0)]
+{
+  rtx ops[] = {operands[0], operands[2], operands[3]};
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_vwabdacc<su><mode>,
+				riscv_vector::BINARY_OP, ops);
+  DONE;
+}
+[(set_attr "type" "viwalu")])

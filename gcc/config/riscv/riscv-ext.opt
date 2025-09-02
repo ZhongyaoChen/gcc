@@ -106,6 +106,9 @@ int riscv_zvk_subext
 TargetVariable
 int riscv_zvl_subext
 
+TargetVariable
+int riscv_zvabd_subext
+
 Mask(RVE) Var(riscv_base_subext)
 
 Mask(RVI) Var(riscv_base_subext)
@@ -328,6 +331,8 @@ Mask(ZHINX) Var(riscv_zinx_subext)
 
 Mask(ZHINXMIN) Var(riscv_zinx_subext)
 
+Mask(ZVABD) Var(riscv_zvabd_subext)
+
 Mask(SDTRIG) Var(riscv_sd_subext)
 
 Mask(SHA) Var(riscv_sh_subext)
@@ -473,4 +478,3 @@ Mask(XANDESVPACKFPH) Var(riscv_xandes_subext)
 Mask(XANDESVDOT) Var(riscv_xandes_subext)
 
 Mask(XSMTVDOT) Var(riscv_xsmt_subext)
-
