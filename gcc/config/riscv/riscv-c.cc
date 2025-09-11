@@ -166,11 +166,11 @@ riscv_cpu_cpp_builtins (cpp_reader *pfile)
     return;
 
   /* Define profile macro if a profile was used.  */
-  const std::string& profile_name = subset_list->profile_name ();
-  if (!profile_name.empty ())
+  const char *profile_name = subset_list->get_profile_name ();
+  if (profile_name)
     {
-      char *profile_macro = (char *)alloca (profile_name.length () + 10 /* For __riscv_ and '\0'.  */);
-      sprintf (profile_macro, "__riscv_%s", profile_name.c_str ());
+      char *profile_macro = (char *)alloca (strlen (profile_name) + 10 /* For __riscv_ and '\0'.  */);
+      sprintf (profile_macro, "__riscv_%s", profile_name);
       builtin_define (profile_macro);
     }
 

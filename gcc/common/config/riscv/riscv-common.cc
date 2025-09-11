@@ -380,7 +380,7 @@ riscv_subset_t::riscv_subset_t ()
 
 riscv_subset_list::riscv_subset_list (const char *arch, location_t *loc)
   : m_arch (arch), m_loc (loc), m_head (NULL), m_tail (NULL), m_xlen (0),
-    m_subset_num (0), m_allow_adding_dup (false), m_profile_name ()
+    m_subset_num (0), m_allow_adding_dup (false)
 {
 }
 
@@ -954,9 +954,6 @@ riscv_subset_list::parse_profiles (const char *arch)
 	  size_t after_pos = pos + p_name.size();
 	  std::string after_part = p.substr(after_pos);
 
-	  /* Store the profile name for later use in macro definition.  */
-	  m_profile_name = p_name;
-
 	  /* If there're only profile, return the profile_string directly.  */
 	  if (after_part[0] == '\0')
 	    return p_str;
@@ -1453,6 +1450,32 @@ fail:
   return NULL;
 }
 
+/* Get profile name from the original arch string if it starts with a profile.  */
+
+const char *
+riscv_subset_list::get_profile_name () const
+{
+  if (!m_arch)
+    return NULL;
+
+  /* Check if the arch string starts with any known profile.  */
+  for (int i = 0; riscv_profiles_table[i].profile_name != nullptr; ++i)
+    {
+      const char *profile_name = riscv_profiles_table[i].profile_name;
+      size_t profile_len = strlen (profile_name);
+      
+      /* Check if arch string starts with this profile name.  */
+      if (strncmp (m_arch, profile_name, profile_len) == 0)
+	{
+	  /* Make sure it's followed by end of string or underscore.  */
+	  if (m_arch[profile_len] == '\0' || m_arch[profile_len] == '_')
+	    return profile_name;
+	}
+    }
+  
+  return NULL;
+}
+
 /* Clone whole subset list.  */
 
 riscv_subset_list *
@@ -1464,7 +1487,6 @@ riscv_subset_list::clone () const
 		   itr->explicit_version_p, true);
 
   new_list->m_xlen = m_xlen;
-  new_list->m_profile_name = m_profile_name;
   return new_list;
 }
 
