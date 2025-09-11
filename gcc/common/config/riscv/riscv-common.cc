@@ -380,7 +380,7 @@ riscv_subset_t::riscv_subset_t ()
 
 riscv_subset_list::riscv_subset_list (const char *arch, location_t *loc)
   : m_arch (arch), m_loc (loc), m_head (NULL), m_tail (NULL), m_xlen (0),
-    m_subset_num (0), m_allow_adding_dup (false)
+    m_subset_num (0), m_allow_adding_dup (false), m_profile_name ()
 {
 }
 
@@ -954,6 +954,9 @@ riscv_subset_list::parse_profiles (const char *arch)
 	  size_t after_pos = pos + p_name.size();
 	  std::string after_part = p.substr(after_pos);
 
+	  /* Store the profile name for later use in macro definition.  */
+	  m_profile_name = p_name;
+
 	  /* If there're only profile, return the profile_string directly.  */
 	  if (after_part[0] == '\0')
 	    return p_str;
@@ -1461,6 +1464,7 @@ riscv_subset_list::clone () const
 		   itr->explicit_version_p, true);
 
   new_list->m_xlen = m_xlen;
+  new_list->m_profile_name = m_profile_name;
   return new_list;
 }
 

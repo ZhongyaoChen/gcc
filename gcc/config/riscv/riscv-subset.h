@@ -71,6 +71,9 @@ private:
   /* Allow adding the same extension more than once.  */
   bool m_allow_adding_dup;
 
+  /* Profile name if one was used in the architecture string.  */
+  std::string m_profile_name;
+
   riscv_subset_list (const char *, location_t *);
 
   const char *parsing_subset_version (const char *, const char *, unsigned *,
@@ -104,6 +107,8 @@ public:
   std::string to_string (bool) const;
 
   unsigned xlen () const {return m_xlen;};
+
+  const std::string& profile_name () const {return m_profile_name;};
 
   riscv_subset_list *clone () const;
 

@@ -165,6 +165,15 @@ riscv_cpu_cpp_builtins (cpp_reader *pfile)
   if (!subset_list)
     return;
 
+  /* Define profile macro if a profile was used.  */
+  const std::string& profile_name = subset_list->profile_name ();
+  if (!profile_name.empty ())
+    {
+      char *profile_macro = (char *)alloca (profile_name.length () + 10 /* For __riscv_ and '\0'.  */);
+      sprintf (profile_macro, "__riscv_%s", profile_name.c_str ());
+      builtin_define (profile_macro);
+    }
+
   size_t max_ext_len = 0;
 
   /* Figure out the max length of extension name for reserving buffer.   */
