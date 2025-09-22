@@ -1568,10 +1568,30 @@ private:
   {
     return prev.get_ta () == next.get_ta ();
   }
+  inline bool tail_policy_eq2_p (const vsetvl_info &prev,
+                                const vsetvl_info &next)
+  {
+    if (!riscv_prefer_agnostic_p ())
+      return true;
+
+    return (((prev.get_policy_demand () == policy_demand_type::ignore_policy)
+             || (next.get_policy_demand () == policy_demand_type::ignore_policy))
+            && tail_policy_eq_p (prev, next));
+  }
   inline bool mask_policy_eq_p (const vsetvl_info &prev,
 				const vsetvl_info &next)
   {
     return prev.get_ma () == next.get_ma ();
+  }
+  inline bool mask_policy_eq2_p (const vsetvl_info &prev,
+                                const vsetvl_info &next)
+  {
+    if (!riscv_prefer_agnostic_p ())
+      return true;
+
+    return (((prev.get_policy_demand () == policy_demand_type::ignore_policy)
+             || (next.get_policy_demand () == policy_demand_type::ignore_policy))
+            && mask_policy_eq_p (prev, next));
   }
   inline bool tail_mask_policy_eq_p (const vsetvl_info &prev,
 				     const vsetvl_info &next)

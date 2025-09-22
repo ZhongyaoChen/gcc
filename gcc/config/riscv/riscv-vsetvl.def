@@ -132,8 +132,8 @@ DEF_POLICY_RULE (tail_policy_only, tail_policy_only, tail_policy_only,
 		 tail_policy_eq_p, tail_policy_eq_p, use_tail_policy)
 DEF_POLICY_RULE (tail_policy_only, mask_policy_only, tail_mask_policy,
 		 always_true, always_false, use_mask_policy)
-DEF_POLICY_RULE (tail_policy_only, ignore_policy, tail_policy_only, always_true,
-		 always_true, nop)
+DEF_POLICY_RULE (tail_policy_only, ignore_policy, tail_policy_only, tail_policy_eq2_p,
+		 tail_policy_eq2_p, nop)
 
 DEF_POLICY_RULE (mask_policy_only, tail_mask_policy, tail_mask_policy,
 		 mask_policy_eq_p, always_false, use_tail_policy)
@@ -141,14 +141,14 @@ DEF_POLICY_RULE (mask_policy_only, tail_policy_only, tail_mask_policy,
 		 always_true, always_false, use_tail_policy)
 DEF_POLICY_RULE (mask_policy_only, mask_policy_only, mask_policy_only,
 		 mask_policy_eq_p, mask_policy_eq_p, use_mask_policy)
-DEF_POLICY_RULE (mask_policy_only, ignore_policy, mask_policy_only, always_true,
-		 always_true, nop)
+DEF_POLICY_RULE (mask_policy_only, ignore_policy, mask_policy_only, mask_policy_eq2_p,
+		 mask_policy_eq2_p, nop)
 
 DEF_POLICY_RULE (ignore_policy, tail_mask_policy, tail_mask_policy, always_true,
 		 always_false, use_tail_mask_policy)
-DEF_POLICY_RULE (ignore_policy, tail_policy_only, tail_policy_only, always_true,
+DEF_POLICY_RULE (ignore_policy, tail_policy_only, tail_policy_only, tail_policy_eq2_p,
 		 always_false, use_tail_policy)
-DEF_POLICY_RULE (ignore_policy, mask_policy_only, mask_policy_only, always_true,
+DEF_POLICY_RULE (ignore_policy, mask_policy_only, mask_policy_only, mask_policy_eq2_p,
 		 always_false, use_mask_policy)
 DEF_POLICY_RULE (ignore_policy, ignore_policy, ignore_policy, always_true,
 		 always_true, nop)
