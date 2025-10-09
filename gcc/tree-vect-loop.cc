@@ -3709,6 +3709,254 @@ check_reduction_path (dump_user_location_t loc, loop_p loop, gphi *phi,
 }
 
 
+/* Cap the tree walk depth to avoid stack overflows.  */
+static const unsigned MAX_SLP_REDUCTION_TREE_DEPTH = 128;
+
+/* Function vect_collect_slp_reduction_ops
+   Walk the PLUS tree rooted at OPERAND and push defs in post-order.
+
+   Example:
+	   sum'
+	   /  \
+	tmp0  tmp1
+	/ \   / \
+	a0  a1 a2  a3
+
+   Push result: [tmp0, tmp1, sum']
+
+   Keep only PLUS_EXPR inside LOOP with a single use and depth bounded by
+   MAX_SLP_REDUCTION_TREE_DEPTH.  Value-preserving conversions are allowed
+   when overflow semantics match.  Any violation aborts with false.  */
+
+static bool
+vect_collect_slp_reduction_ops (loop_vec_info loop_info, class loop *loop,
+				    enum tree_code op_code, tree operand,
+			    vec<stmt_vec_info, va_heap> &stmt_ops,
+			    bitmap visited_ssa, unsigned depth)
+{
+  if (depth > MAX_SLP_REDUCTION_TREE_DEPTH)
+    {
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: depth %u over limit for %T\n",
+		       depth, operand);
+      return false;
+    }
+
+  if (TREE_CODE (operand) != SSA_NAME)
+    {
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: reached leaf %T\n", operand);
+      return true;
+    }
+
+  unsigned version = SSA_NAME_VERSION (operand);
+  if (!bitmap_set_bit (visited_ssa, version))
+    {
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: already visited %T\n", operand);
+      return true;
+    }
+
+  stmt_vec_info stmt_info = loop_info->lookup_def (operand);
+  if (!stmt_info)
+    {
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: no stmt info for %T\n", operand);
+      return true;
+    }
+
+  stmt_info = vect_stmt_to_vectorize (stmt_info);
+  gimple *stmt = stmt_info->stmt;
+
+  if (!flow_bb_inside_loop_p (loop, gimple_bb (stmt)))
+    {
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: %G defined outside loop\n", stmt);
+      return true;
+    }
+
+  if (!is_gimple_assign (stmt))
+    {
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: skip non-assign stmt %G\n", stmt);
+      return true;
+    }
+
+  enum tree_code rhs_code = gimple_assign_rhs_code (stmt);
+
+  if (rhs_code == op_code)
+    {
+      tree lhs = gimple_assign_lhs (stmt);
+      if (!has_single_use (lhs))
+	{
+	  if (dump_enabled_p ())
+	    dump_printf_loc (MSG_NOTE, vect_location,
+			       "slp collect: multiple uses of %T\n", lhs);
+	  return false;
+	}
+
+      tree op0 = gimple_assign_rhs1 (stmt);
+      tree op1 = gimple_assign_rhs2 (stmt);
+
+      if (!vect_collect_slp_reduction_ops (loop_info, loop, op_code, op0,
+				      stmt_ops, visited_ssa, depth + 1))
+	{
+	  if (dump_enabled_p ())
+	    dump_printf_loc (MSG_NOTE, vect_location,
+			"slp collect: left operand %T unsuitable\n", op0);
+	  return false;
+	}
+      if (!vect_collect_slp_reduction_ops (loop_info, loop, op_code, op1,
+				      stmt_ops, visited_ssa, depth + 1))
+	{
+	  if (dump_enabled_p ())
+	    dump_printf_loc (MSG_NOTE, vect_location,
+			"slp collect: right operand %T unsuitable\n", op1);
+	  return false;
+	}
+
+      if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: push %G\n", stmt);
+      stmt_ops.safe_push (stmt_info);
+      return true;
+    }
+
+  if (CONVERT_EXPR_CODE_P (rhs_code)
+      && tree_nop_conversion_p (TREE_TYPE (gimple_assign_rhs1 (stmt)),
+				       TREE_TYPE (gimple_assign_lhs (stmt))))
+    {
+      /* Stop if overflow semantics differ.  */
+      if (TYPE_OVERFLOW_WRAPS (TREE_TYPE (gimple_assign_rhs1 (stmt)))
+	  != TYPE_OVERFLOW_WRAPS (TREE_TYPE (gimple_assign_lhs (stmt))))
+	{
+	  if (dump_enabled_p ())
+	    dump_printf_loc (MSG_NOTE, vect_location,
+			       "slp collect: stop at %G (overflow mismatch)\n",
+			       stmt);
+	  return true;
+	}
+      return vect_collect_slp_reduction_ops (loop_info, loop, op_code,
+					     gimple_assign_rhs1 (stmt),
+					     stmt_ops, visited_ssa, depth + 1);
+    }
+
+  if (dump_enabled_p ())
+	dump_printf_loc (MSG_NOTE, vect_location,
+		       "slp collect: treat %G as terminal\n", stmt);
+  return true;
+}
+
+/* Merge EXTRA_OPS into REDUC_CHAIN, dropping duplicates.
+
+   Example:
+   reduc_chain: [t2, root]
+   extra_ops:   [t0, t1, root]
+   After merge: [t0, t1, t2, root]
+
+   Chains stay short, so the scan keeps the logic simple.  */
+
+static void
+vect_merge_slp_reduction_ops (vec<stmt_vec_info> &reduc_chain,
+				vec<stmt_vec_info, va_heap> &extra_ops)
+{
+  if (extra_ops.is_empty ())
+    return;
+
+  auto_vec<stmt_vec_info, 16> new_chain;
+
+  for (unsigned j = 0; j < extra_ops.length (); ++j)
+    {
+      stmt_vec_info info = extra_ops[j];
+      bool found = false;
+      for (unsigned k = 0; k < reduc_chain.length (); ++k)
+	if (reduc_chain[k] == info)
+	  {
+	    found = true;
+	    break;
+	  }
+      if (!found)
+	new_chain.safe_push (info);
+    }
+
+  if (new_chain.is_empty ())
+    return;
+
+  for (unsigned j = 0; j < reduc_chain.length (); ++j)
+    new_chain.safe_push (reduc_chain[j]);
+
+  reduc_chain.truncate (0);
+  for (unsigned j = 0; j < new_chain.length (); ++j)
+    reduc_chain.safe_push (new_chain[j]);
+}
+
+/* Function vect_try_extend_slp_reduction_chain
+
+   Reassociation leaves signed reductions as a lone root, so we walk the other
+   operand (a PLUS tree) and prepend its statements.  Example:
+
+	root: sum' = sum + partial
+	partial
+	|-- tmp0 = a0 + a1
+	`-- tmp1 = a2 + a3
+	REDUC_CHAIN before: [root]
+	REDUC_CHAIN after:  [tmp0, tmp1, root]
+
+   Accept only PLUS_EXPR with a single use, matching overflow semantics and
+   bounded depth; fold-left lowering is handled later by
+   vect_transform_reduction ().  */
+
+static bool
+vect_try_extend_slp_reduction_chain (loop_vec_info loop_info, class loop *loop,
+					enum tree_code op_code,
+					vec<stmt_vec_info> &reduc_chain)
+{
+  if (reduc_chain.length () != 1)
+    return false;
+
+  if (op_code != PLUS_EXPR)
+    return false;
+
+  stmt_vec_info root = vect_stmt_to_vectorize (reduc_chain.last ());
+  gimple *root_stmt = root->stmt;
+  if (!is_gimple_assign (root_stmt))
+    return false;
+
+  int reduc_idx = STMT_VINFO_REDUC_IDX (root);
+  if (reduc_idx < 0)
+    return false;
+
+  gcc_assert (gimple_num_ops (root_stmt) >= 3);
+
+  tree candidate = (reduc_idx == 0
+			? gimple_assign_rhs2 (root_stmt)
+			: gimple_assign_rhs1 (root_stmt));
+  gcc_assert (candidate != NULL_TREE);
+
+  auto_vec<stmt_vec_info, 16> extra_ops;
+  auto_bitmap visited_ssa;
+  if (!vect_collect_slp_reduction_ops (loop_info, loop, op_code, candidate,
+			  extra_ops, visited_ssa, 0))
+    return false;
+
+  if (extra_ops.is_empty ())
+    return false;
+
+  vect_merge_slp_reduction_ops (reduc_chain, extra_ops);
+
+  if (dump_enabled_p ())
+    dump_printf_loc (MSG_NOTE, vect_location,
+		     "extended SLP reduc_chain to %u stmts\n",
+		     reduc_chain.length ());
+
+  return true;
+}
 
 /* Function vect_is_simple_reduction
 
@@ -3953,6 +4201,11 @@ vect_is_simple_reduction (loop_vec_info loop_info, stmt_vec_info phi_info,
 	    continue;
 	  reduc_chain.safe_push (stmt_info);
 	}
+      if (slp && is_slp_reduc && code.is_tree_code ())
+	/* Try to extend a singleton chain via a PLUS tree walk.  */
+	vect_try_extend_slp_reduction_chain (loop_info, loop,
+					       tree_code (code),
+					       reduc_chain);
       if (slp && is_slp_reduc && reduc_chain.length () > 1)
 	{
 	  for (unsigned i = 0; i < reduc_chain.length () - 1; ++i)
