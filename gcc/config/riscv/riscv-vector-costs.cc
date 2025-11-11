@@ -1099,6 +1099,64 @@ segment_loadstore_group_size (enum vect_cost_for_stmt kind,
   return 0;
 }
 
+/* Calculate LMUL-based cost adjustment factor.
+   Larger LMUL values increase execution overhead.
+
+   This penalty is only applied when the loop is completely unrolled.
+   Returns additional cost to be added based on LMUL.  */
+static unsigned
+get_lmul_cost_penalty (machine_mode mode, loop_vec_info loop_vinfo)
+{
+  if (!riscv_v_ext_vector_mode_p (mode))
+    return 0;
+
+  /* Only apply LMUL penalty when loop is completely unrolled.
+     For non-unrolled loops, larger LMUL reduces iteration count,
+     which may provide overall benefit despite slower instructions.  */
+  if (!loop_vinfo)
+    return 0;
+
+  /* Check if loop will be completely unrolled:
+     - NITERS must be known at compile time
+     - NITERS must be less than VF (single iteration)  */
+  if (!LOOP_VINFO_NITERS_KNOWN_P (loop_vinfo))
+    return 0;
+
+  poly_uint64 vf = LOOP_VINFO_VECT_FACTOR (loop_vinfo);
+  unsigned HOST_WIDE_INT niters = LOOP_VINFO_INT_NITERS (loop_vinfo);
+
+  /* If NITERS >= VF, loop will have multiple iterations.
+     In this case, larger LMUL reduces loop count, don't penalize.  */
+  if (maybe_ge (poly_uint64 (niters), vf))
+    return 0;
+
+  /* Loop is completely unrolled (single iteration).
+     Apply LMUL penalty since larger LMUL increases latency.  */
+  enum vlmul_type vlmul = get_vlmul (mode);
+
+  /* Cost penalty increases with LMUL:
+     - m1 (LMUL_1): 0 penalty (baseline)
+     - m2 (LMUL_2): +1
+     - m4 (LMUL_4): +2
+     - m8 (LMUL_8): +3
+     - mf2/mf4/mf8: 0 (already efficient)  */
+  switch (vlmul)
+    {
+    case LMUL_2:
+      return 1;
+    case LMUL_4:
+      return 2;
+    case LMUL_8:
+      return 3;
+    case LMUL_1:
+    case LMUL_F2:
+    case LMUL_F4:
+    case LMUL_F8:
+    default:
+      return 0;
+    }
+}
+
 /* Adjust vectorization cost after calling riscv_builtin_vectorization_cost.
    For some statement, we would like to further fine-grain tweak the cost on
    top of riscv_builtin_vectorization_cost handling which doesn't have any
@@ -1181,6 +1239,15 @@ costs::adjust_stmt_cost (enum vect_cost_for_stmt kind, loop_vec_info loop,
 		    default:
 		      break;
 		    }
+
+		  /* Adjust cost for all segment load/store operations based on
+		     actual vectype LMUL.  Only penalize when loop is completely
+		     unrolled.  */
+		  if (vectype)
+		    {
+		      machine_mode actual_mode = TYPE_MODE (vectype);
+		      stmt_cost += get_lmul_cost_penalty (actual_mode, loop);
+		    }
 		}
 	      else
 		{
@@ -1236,9 +1303,28 @@ costs::adjust_stmt_cost (enum vect_cost_for_stmt kind, loop_vec_info loop,
 			}
 		    }
 		}
+
+	      /* Apply LMUL penalty for unit-stride operations.
+		 This ensures consistent cost modeling across all
+		 vector load/store types when loop is unrolled.  */
+	      if (vectype)
+		{
+		  machine_mode actual_mode = TYPE_MODE (vectype);
+		  stmt_cost += get_lmul_cost_penalty (actual_mode, loop);
+		}
 	    }
 	  break;
 	}
+
+    case vector_stmt:
+      /* Adjust cost for all vector arithmetic operations based on LMUL.
+	 Only penalize when loop is completely unrolled.  */
+      if (vectype)
+	{
+	  machine_mode actual_mode = TYPE_MODE (vectype);
+	  stmt_cost += get_lmul_cost_penalty (actual_mode, loop);
+	}
+      break;
 
     default:
       break;
