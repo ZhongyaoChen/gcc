@@ -1099,61 +1099,42 @@ segment_loadstore_group_size (enum vect_cost_for_stmt kind,
   return 0;
 }
 
-/* Calculate LMUL-based cost adjustment factor.
-   Larger LMUL values increase execution overhead.
+/* Calculate LMUL-based cost scaling factor.
+   Larger LMUL values process more data but have proportionally
+   higher latency and register pressure.
 
-   This penalty is only applied when the loop is completely unrolled.
-   Returns additional cost to be added based on LMUL.  */
+   Returns the cost scaling factor based on LMUL.  For LMUL > 1,
+   the factor represents the relative cost increase (2x, 4x, 8x).
+   For LMUL <= 1, returns 1 (no scaling).  */
 static unsigned
-get_lmul_cost_penalty (machine_mode mode, loop_vec_info loop_vinfo)
+get_lmul_cost_scaling (machine_mode mode)
 {
   if (!riscv_v_ext_vector_mode_p (mode))
-    return 0;
+    return 1;
 
-  /* Only apply LMUL penalty when loop is completely unrolled.
-     For non-unrolled loops, larger LMUL reduces iteration count,
-     which may provide overall benefit despite slower instructions.  */
-  if (!loop_vinfo)
-    return 0;
-
-  /* Check if loop will be completely unrolled:
-     - NITERS must be known at compile time
-     - NITERS must be less than VF (single iteration)  */
-  if (!LOOP_VINFO_NITERS_KNOWN_P (loop_vinfo))
-    return 0;
-
-  poly_uint64 vf = LOOP_VINFO_VECT_FACTOR (loop_vinfo);
-  unsigned HOST_WIDE_INT niters = LOOP_VINFO_INT_NITERS (loop_vinfo);
-
-  /* If NITERS >= VF, loop will have multiple iterations.
-     In this case, larger LMUL reduces loop count, don't penalize.  */
-  if (maybe_ge (poly_uint64 (niters), vf))
-    return 0;
-
-  /* Loop is completely unrolled (single iteration).
-     Apply LMUL penalty since larger LMUL increases latency.  */
   enum vlmul_type vlmul = get_vlmul (mode);
 
-  /* Cost penalty increases with LMUL:
-     - m1 (LMUL_1): 0 penalty (baseline)
-     - m2 (LMUL_2): +1
-     - m4 (LMUL_4): +2
-     - m8 (LMUL_8): +3
-     - mf2/mf4/mf8: 0 (already efficient)  */
+  /* Cost scaling based on LMUL and data processed.
+     Larger LMUL values have proportionally higher latency:
+     - m1 (LMUL_1): 1x (baseline)
+     - m2 (LMUL_2): 2x (processes 2x data, ~2x latency)
+     - m4 (LMUL_4): 4x (processes 4x data, ~4x latency)
+     - m8 (LMUL_8): 8x (processes 8x data, ~8x latency)
+     - mf2/mf4/mf8: 1x (fractional LMUL, already efficient)  */
   switch (vlmul)
     {
     case LMUL_2:
-      return 1;
-    case LMUL_4:
       return 2;
+    case LMUL_4:
+      return 4;
     case LMUL_8:
-      return 3;
+      return 8;
     case LMUL_1:
     case LMUL_F2:
     case LMUL_F4:
     case LMUL_F8:
     default:
-      return 0;
+      return 1;
     }
 }
 
@@ -1239,15 +1220,6 @@ costs::adjust_stmt_cost (enum vect_cost_for_stmt kind, loop_vec_info loop,
 		    default:
 		      break;
 		    }
-
-		  /* Adjust cost for all segment load/store operations based on
-		     actual vectype LMUL.  Only penalize when loop is completely
-		     unrolled.  */
-		  if (vectype)
-		    {
-		      machine_mode actual_mode = TYPE_MODE (vectype);
-		      stmt_cost += get_lmul_cost_penalty (actual_mode, loop);
-		    }
 		}
 	      else
 		{
@@ -1303,32 +1275,25 @@ costs::adjust_stmt_cost (enum vect_cost_for_stmt kind, loop_vec_info loop,
 			}
 		    }
 		}
-
-	      /* Apply LMUL penalty for unit-stride operations.
-		 This ensures consistent cost modeling across all
-		 vector load/store types when loop is unrolled.  */
-	      if (vectype)
-		{
-		  machine_mode actual_mode = TYPE_MODE (vectype);
-		  stmt_cost += get_lmul_cost_penalty (actual_mode, loop);
-		}
 	    }
 	  break;
 	}
 
     case vector_stmt:
-      /* Adjust cost for all vector arithmetic operations based on LMUL.
-	 Only penalize when loop is completely unrolled.  */
-      if (vectype)
-	{
-	  machine_mode actual_mode = TYPE_MODE (vectype);
-	  stmt_cost += get_lmul_cost_penalty (actual_mode, loop);
-	}
-      break;
-
     default:
       break;
     }
+
+  /* Apply LMUL cost scaling uniformly to all vector operations.
+     Larger LMUL values have higher latency and register pressure,
+     which affects performance regardless of loop structure.  */
+  if (vectype)
+    {
+      unsigned lmul_factor = get_lmul_cost_scaling (TYPE_MODE (vectype));
+      if (lmul_factor > 1)
+	stmt_cost *= lmul_factor;
+    }
+
   return stmt_cost;
 }
 
