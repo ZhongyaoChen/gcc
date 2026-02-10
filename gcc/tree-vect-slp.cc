@@ -3127,8 +3127,221 @@ fail:
 
       if (has_two_operators_perm)
 	{
+	  bool split_two_operator_lanes
+	    = (stmts.length () == 4
+	       && two_op_scalar_stmts[0].length () == stmts.length ()
+	       && two_op_scalar_stmts[1].length () == stmts.length ()
+	       && two_op_perm_indices[0].length () == stmts.length ()
+	       && two_op_perm_indices[1].length () == stmts.length ());
+
+	  if (split_two_operator_lanes)
+	    {
+	      unsigned plus_cnt = 0;
+	      unsigned minus_cnt = 0;
+	      stmt_vec_info lane_stmt;
+	      FOR_EACH_VEC_ELT (stmts, i, lane_stmt)
+		{
+		  gassign *lane_assign = dyn_cast<gassign *> (lane_stmt->stmt);
+		  if (!lane_assign)
+		    {
+		      split_two_operator_lanes = false;
+		      break;
+		    }
+
+		  enum tree_code lane_code = gimple_assign_rhs_code (lane_assign);
+		  if (lane_code == PLUS_EXPR)
+		    ++plus_cnt;
+		  else if (lane_code == MINUS_EXPR)
+		    ++minus_cnt;
+		  else
+		    {
+		      split_two_operator_lanes = false;
+		      break;
+		    }
+		}
+
+	      split_two_operator_lanes &= plus_cnt > 0 && minus_cnt > 0;
+	    }
+
 	  slp_tree child = children[0];
 	  children.truncate (0);
+
+	  bool can_rewire_child
+	    = (SLP_TREE_CHILDREN (child).length () == 1
+	       && SLP_TREE_CODE (SLP_TREE_CHILDREN (child)[0]) == VEC_PERM_EXPR);
+
+	  if (split_two_operator_lanes)
+	    {
+	      unsigned plain_anchor_nodes = 0;
+
+	      struct anchor_cache_entry
+	      {
+		stmt_vec_info scalar_stmt;
+		unsigned perm_idx;
+		slp_tree node;
+	      };
+	      auto_vec<anchor_cache_entry, 8> anchor_cache;
+
+	      auto make_anchor_node
+		= [&] (stmt_vec_info scalar_stmt, unsigned perm_idx) -> slp_tree
+		  {
+		    for (unsigned cache_i = 0; cache_i < anchor_cache.length (); ++cache_i)
+		      if (anchor_cache[cache_i].scalar_stmt == scalar_stmt
+			  && anchor_cache[cache_i].perm_idx == perm_idx)
+			{
+			  SLP_TREE_REF_COUNT (anchor_cache[cache_i].node)++;
+			  return anchor_cache[cache_i].node;
+			}
+
+		    if (can_rewire_child
+			&& is_a<gassign *> (scalar_stmt->stmt)
+			&& gimple_assign_cast_p (scalar_stmt->stmt))
+		      {
+			slp_tree base_child = SLP_TREE_CHILDREN (child)[0];
+			unsigned lane_idx = SLP_TREE_SCALAR_STMTS (child).length ();
+			stmt_vec_info child_stmt;
+			FOR_EACH_VEC_ELT (SLP_TREE_SCALAR_STMTS (child), lane_idx, child_stmt)
+			  if (child_stmt == scalar_stmt)
+			    break;
+
+			if (lane_idx < SLP_TREE_SCALAR_STMTS (child).length ()
+			    && lane_idx < SLP_TREE_LANE_PERMUTATION (base_child).length ())
+			  {
+			    std::pair<unsigned, unsigned> base_perm
+			      = SLP_TREE_LANE_PERMUTATION (base_child)[lane_idx];
+			    unsigned base_child_nch = SLP_TREE_CHILDREN (base_child).length ();
+			    if (base_perm.first < base_child_nch)
+			      {
+				vec<stmt_vec_info> scalar_stmts = vNULL;
+				scalar_stmts.safe_push (scalar_stmt);
+				slp_tree onode = vect_create_new_slp_node (scalar_stmts, 1);
+				SLP_TREE_CODE (onode)
+				  = gimple_assign_rhs_code (as_a<gassign *> (scalar_stmt->stmt));
+				SLP_TREE_VECTYPE (onode) = vectype;
+				onode->max_nunits = child->max_nunits;
+
+				if (base_child_nch == 2)
+				  {
+				    vec<stmt_vec_info> lane_stmts = vNULL;
+				    if (lane_idx < SLP_TREE_SCALAR_STMTS (base_child).length ())
+				      lane_stmts.safe_push (SLP_TREE_SCALAR_STMTS (base_child)[lane_idx]);
+				    else
+				      lane_stmts.safe_push (scalar_stmt);
+
+				    slp_tree lane_node = vect_create_new_slp_node (lane_stmts, 2);
+				    SLP_TREE_CODE (lane_node) = VEC_PERM_EXPR;
+				    SLP_TREE_VECTYPE (lane_node) = SLP_TREE_VECTYPE (base_child);
+				    lane_node->max_nunits = base_child->max_nunits;
+				    slp_tree lane_op0 = SLP_TREE_CHILDREN (base_child)[0];
+				    slp_tree lane_op1 = SLP_TREE_CHILDREN (base_child)[1];
+				    SLP_TREE_CHILDREN (lane_node).quick_push (lane_op0);
+				    SLP_TREE_CHILDREN (lane_node).quick_push (lane_op1);
+				    SLP_TREE_REF_COUNT (lane_op0)++;
+				    SLP_TREE_REF_COUNT (lane_op1)++;
+				    SLP_TREE_LANE_PERMUTATION (lane_node).safe_push (base_perm);
+				    SLP_TREE_CHILDREN (onode).quick_push (lane_node);
+				    anchor_cache_entry entry;
+				    entry.scalar_stmt = scalar_stmt;
+				    entry.perm_idx = perm_idx;
+				    entry.node = onode;
+				    anchor_cache.safe_push (entry);
+				    return onode;
+				  }
+
+				slp_tree selected = SLP_TREE_CHILDREN (base_child)[base_perm.first];
+				if (base_perm.second == 0)
+				  {
+				    SLP_TREE_CHILDREN (onode).quick_push (selected);
+				    SLP_TREE_REF_COUNT (selected)++;
+				    anchor_cache_entry entry;
+				    entry.scalar_stmt = scalar_stmt;
+				    entry.perm_idx = perm_idx;
+				    entry.node = onode;
+				    anchor_cache.safe_push (entry);
+				    return onode;
+				  }
+
+				vec<stmt_vec_info> lane_stmts = vNULL;
+				if (lane_idx < SLP_TREE_SCALAR_STMTS (base_child).length ())
+				  lane_stmts.safe_push (SLP_TREE_SCALAR_STMTS (base_child)[lane_idx]);
+				else
+				  lane_stmts.safe_push (scalar_stmt);
+
+				slp_tree lane_node = vect_create_new_slp_node (lane_stmts, 2);
+				SLP_TREE_CODE (lane_node) = VEC_PERM_EXPR;
+				SLP_TREE_VECTYPE (lane_node) = SLP_TREE_VECTYPE (selected);
+				lane_node->max_nunits = selected->max_nunits;
+				SLP_TREE_CHILDREN (lane_node).quick_push (selected);
+				SLP_TREE_CHILDREN (lane_node).quick_push (selected);
+				SLP_TREE_REF_COUNT (selected) += 2;
+				SLP_TREE_LANE_PERMUTATION (lane_node).safe_push
+				  (std::make_pair (0u, base_perm.second));
+				SLP_TREE_CHILDREN (onode).quick_push (lane_node);
+				anchor_cache_entry entry;
+				entry.scalar_stmt = scalar_stmt;
+				entry.perm_idx = perm_idx;
+				entry.node = onode;
+				anchor_cache.safe_push (entry);
+				return onode;
+			      }
+			  }
+		      }
+
+		    vec<stmt_vec_info> scalar_stmts = vNULL;
+		    scalar_stmts.safe_push (scalar_stmt);
+		    slp_tree pnode = vect_create_new_slp_node (scalar_stmts, 2);
+		    SLP_TREE_CODE (pnode) = VEC_PERM_EXPR;
+		    SLP_TREE_VECTYPE (pnode) = vectype;
+		    pnode->max_nunits = child->max_nunits;
+		    SLP_TREE_CHILDREN (pnode).quick_push (child);
+		    SLP_TREE_CHILDREN (pnode).quick_push (child);
+		    SLP_TREE_LANE_PERMUTATION (pnode).safe_push
+		      (std::make_pair (0, perm_idx));
+		    ++plain_anchor_nodes;
+		    anchor_cache_entry entry;
+		    entry.scalar_stmt = scalar_stmt;
+		    entry.perm_idx = perm_idx;
+		    entry.node = pnode;
+		    anchor_cache.safe_push (entry);
+		    return pnode;
+		  };
+
+	      auto_vec<slp_tree, 4> term_nodes;
+	      stmt_vec_info lane_stmt;
+	      FOR_EACH_VEC_ELT (stmts, i, lane_stmt)
+		{
+		  vec<stmt_vec_info> scalar_stmts = vNULL;
+		  scalar_stmts.safe_push (lane_stmt);
+		  slp_tree term = vect_create_new_slp_node (scalar_stmts, 2);
+		  SLP_TREE_VECTYPE (term) = vectype;
+		  SLP_TREE_CODE (term)
+		    = gimple_assign_rhs_code (as_a<gassign *> (lane_stmt->stmt));
+		  term->max_nunits = child->max_nunits;
+		  SLP_TREE_CHILDREN (term).quick_push
+		    (make_anchor_node (two_op_scalar_stmts[0][i],
+				       two_op_perm_indices[0][i]));
+		  SLP_TREE_CHILDREN (term).quick_push
+		    (make_anchor_node (two_op_scalar_stmts[1][i],
+				       two_op_perm_indices[1][i]));
+		  term_nodes.safe_push (term);
+		}
+
+	      if (plain_anchor_nodes > 0)
+		SLP_TREE_REF_COUNT (child) += plain_anchor_nodes * 2;
+
+	      node = vect_create_new_slp_node (node, stmts, term_nodes.length ());
+	      SLP_TREE_VECTYPE (node) = vectype;
+	      SLP_TREE_CODE (node) = VEC_PERM_EXPR;
+	      for (unsigned j = 0; j < term_nodes.length (); ++j)
+		{
+		  SLP_TREE_CHILDREN (node).safe_push (term_nodes[j]);
+		  SLP_TREE_LANE_PERMUTATION (node).safe_push
+		    (std::make_pair (j, 0));
+		}
+
+	      return node;
+	    }
+
 	  for (i = 0; i < 2; i++)
 	    {
 	      slp_tree pnode
@@ -7118,6 +7331,8 @@ vect_optimize_slp_pass::start_choosing_layouts ()
       else if (SLP_TREE_PERMUTE_P (node)
 	       && SLP_TREE_CHILDREN (node).length () == 1
 	       && (child = SLP_TREE_CHILDREN (node)[0])
+	       && SLP_TREE_VECTYPE (child)
+	       && VECTOR_TYPE_P (SLP_TREE_VECTYPE (child))
 	       && (TYPE_VECTOR_SUBPARTS (SLP_TREE_VECTYPE (child))
 		   .is_constant (&imin)))
 	{
