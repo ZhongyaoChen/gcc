@@ -1441,6 +1441,33 @@ expand_const_vector_duplicate (rtx target, rvv_builder *builder)
     return expand_const_vector_duplicate_default (target, builder);
 }
 
+/* Return true if the first NPATTERNS elements form a linear sequence:
+   BASE + i * LANE_STEP.  */
+static bool
+single_step_base_linear_pattern_p (rvv_builder *builder,
+                                   HOST_WIDE_INT *base,
+                                   HOST_WIDE_INT *lane_step)
+{
+  unsigned int npatterns = builder->npatterns ();
+  if (npatterns < 2
+      || !CONST_INT_P (builder->elt (0))
+      || !CONST_INT_P (builder->elt (1)))
+    return false;
+
+  HOST_WIDE_INT b = INTVAL (builder->elt (0));
+  HOST_WIDE_INT step = INTVAL (builder->elt (1)) - b;
+  for (unsigned int i = 2; i < npatterns; ++i)
+    {
+      if (!CONST_INT_P (builder->elt (i))
+          || INTVAL (builder->elt (i)) != b + (HOST_WIDE_INT) i * step)
+        return false;
+    }
+
+  *base = b;
+  *lane_step = step;
+  return true;
+}
+
 static void
 expand_const_vector_single_step_npatterns (rtx target, rvv_builder *builder)
 {
@@ -1551,14 +1578,7 @@ expand_const_vector_single_step_npatterns (rtx target, rvv_builder *builder)
 	  /* Case 2: For example as below:
 	     { -4, 4, -4 + 1, 4 + 1, -4 + 2, 4 + 2, -4 + 3, 4 + 3, ... }
 	   */
-	  rvv_builder v (builder->mode (), builder->npatterns (), 1);
-
-	  /* Step 1: Generate { a, b, a, b, ... }  */
-	  for (unsigned int i = 0; i < v.npatterns (); ++i)
-	    v.quick_push (builder->elt (i));
-	  rtx new_base = v.build ();
-
-	  /* Step 2: Generate tmp1 = VID >> LOG2 (NPATTERNS).  */
+	  /* Step 1: Generate tmp1 = VID >> LOG2 (NPATTERNS).  */
 	  rtx shift_count = gen_int_mode (exact_log2 (builder->npatterns ()),
 					  builder->inner_mode ());
 	  rtx tmp1 = gen_reg_rtx (builder->mode ());
@@ -1566,16 +1586,43 @@ expand_const_vector_single_step_npatterns (rtx target, rvv_builder *builder)
 	  emit_vlmax_insn (code_for_pred_scalar (LSHIFTRT, builder->mode ()),
 			   BINARY_OP, shift_ops);
 
-	  /* Step 3: Generate tmp2 = tmp1 * step.  */
+	  /* Step 2: Generate tmp2 = tmp1 * step.  */
 	  rtx tmp2 = gen_reg_rtx (builder->mode ());
 	  rtx step
 	    = simplify_binary_operation (MINUS, builder->inner_mode (),
-					 builder->elt (v.npatterns()),
+					 builder->elt (builder->npatterns ()),
 					 builder->elt (0));
 	  expand_vec_series (tmp2, const0_rtx, step, tmp1);
 
-	  /* Step 4: Generate result = tmp2 + new_base.  */
-	  rtx add_ops[] = {result, tmp2, new_base};
+	  /* Step 3: Build the per-lane base term.  Prefer pure arithmetic
+	     construction when the first NPATTERNS elements are linear.  */
+	  rtx base_term;
+	  HOST_WIDE_INT base, lane_step;
+	  if (single_step_base_linear_pattern_p (builder, &base, &lane_step))
+	    {
+	      rtx lane_idx = gen_reg_rtx (builder->mode ());
+	      rtx lane_mask
+		= gen_int_mode (builder->npatterns () - 1, builder->inner_mode ());
+	      rtx and_ops[] = {lane_idx, vid, lane_mask};
+	      emit_vlmax_insn (code_for_pred_scalar (AND, builder->mode ()),
+		       BINARY_OP, and_ops);
+
+	      base_term = gen_reg_rtx (builder->mode ());
+	      expand_vec_series (base_term,
+				 gen_int_mode (base, builder->inner_mode ()),
+				 gen_int_mode (lane_step, builder->inner_mode ()),
+				 lane_idx);
+	    }
+	  else
+	    {
+	      rvv_builder v (builder->mode (), builder->npatterns (), 1);
+	      for (unsigned int i = 0; i < v.npatterns (); ++i)
+		v.quick_push (builder->elt (i));
+	      base_term = v.build ();
+	    }
+
+	  /* Step 4: Generate result = tmp2 + base_term.  */
+	  rtx add_ops[] = {result, tmp2, base_term};
 	  emit_vlmax_insn (code_for_pred (PLUS, builder->mode ()), BINARY_OP,
 			   add_ops);
 	}
