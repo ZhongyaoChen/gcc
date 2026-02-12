@@ -388,6 +388,9 @@ vect_detect_pair_op (slp_tree node1, slp_tree node2, lane_permutation_t &lanes,
 	  auto l0node = SLP_TREE_CHILDREN (node1);
 	  auto l1node = SLP_TREE_CHILDREN (node2);
 
+	  if (l0node.length () < 2 || l1node.length () < 2)
+	    return CMPLX_NONE;
+
 	  /* Check if the tree is connected as we expect it.  */
 	  if (!((l0node[0] == l1node[0] && l0node[1] == l1node[1])
 	      || (l0node[0] == l1node[1] && l0node[1] == l1node[0])))
