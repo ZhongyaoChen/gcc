@@ -13087,7 +13087,8 @@ riscv_can_change_mode_class (machine_mode from, machine_mode to,
      Therefore prevent that.  */
   if (reg_classes_intersect_p (V_REGS, rclass)
       && riscv_vls_mode_p (from)
-      && !ordered_p (BITS_PER_RISCV_VECTOR, GET_MODE_PRECISION (from)))
+      && !ordered_p (BITS_PER_RISCV_VECTOR, GET_MODE_PRECISION (from))
+      && !riscv_vls_mode_p (to))
       return false;
 
   return !reg_classes_intersect_p (FP_REGS, rclass);

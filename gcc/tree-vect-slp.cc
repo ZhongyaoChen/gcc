@@ -11712,13 +11712,17 @@ struct slp_anchor_cache_data : vect_data
   static const unsigned MAGIC = 0xA63C4E51U;
 
   slp_anchor_cache_data ()
-    : magic (MAGIC), lanes (0), vectype (NULL_TREE)
+    : magic (MAGIC), lanes (0), vectype (NULL_TREE),
+      subvec_vectype (NULL_TREE)
   {}
 
   unsigned magic;
   unsigned lanes;
   tree vectype;
+  tree subvec_vectype;
   auto_vec<tree> transpose_defs;
+  /* Flattened as [lane * copies + copy].  */
+  auto_vec<tree> subvec_defs;
 };
 
 /* Try to lower multi-source SLP permutations (3+ vector sources) by
@@ -12117,6 +12121,8 @@ vectorizable_slp_permutation_shared_anchor
     {
       cache->transpose_defs.truncate (0);
       cache->transpose_defs.reserve_exact (copies);
+      cache->subvec_defs.truncate (0);
+      cache->subvec_vectype = NULL_TREE;
       cache->lanes = lanes;
       cache->vectype = base_vectype;
 
@@ -12172,34 +12178,47 @@ vectorizable_slp_permutation_shared_anchor
 
   if (emit_subvector)
     {
-      unsigned HOST_WIDE_INT elsz
-        = tree_to_uhwi (TYPE_SIZE (TREE_TYPE (base_vectype)));
-      unsigned HOST_WIDE_INT bitpos = lane_idx * per_lane * elsz;
-
-      for (unsigned ci = 0; ci < copies; ++ci)
+      if (cache->subvec_vectype != vectype
+          || cache->subvec_defs.length () != lanes * copies)
         {
-          tree t = cache->transpose_defs[ci];
-          tree lhs = make_ssa_name (vectype);
-          tree lowpart = build3 (BIT_FIELD_REF, vectype, t,
-                                 TYPE_SIZE (vectype),
-                                 bitsize_int (bitpos));
-          gassign *stmt = gimple_build_assign (lhs, lowpart);
+          cache->subvec_defs.truncate (0);
+          cache->subvec_defs.safe_grow_cleared (lanes * copies);
+          cache->subvec_vectype = vectype;
 
-          gimple_stmt_iterator emit_gsi = *gsi;
-          if (TREE_CODE (t) == SSA_NAME)
+          unsigned HOST_WIDE_INT elsz
+            = tree_to_uhwi (TYPE_SIZE (TREE_TYPE (base_vectype)));
+
+          for (unsigned ci = 0; ci < copies; ++ci)
             {
-              gimple *t_stmt = SSA_NAME_DEF_STMT (t);
-              if (t_stmt && gimple_bb (t_stmt))
+              tree t = cache->transpose_defs[ci];
+              gimple_stmt_iterator emit_gsi = *gsi;
+              if (TREE_CODE (t) == SSA_NAME)
                 {
-                  emit_gsi = gsi_for_stmt (t_stmt);
-                  if (!gsi_end_p (emit_gsi))
-                    gsi_next (&emit_gsi);
+                  gimple *t_stmt = SSA_NAME_DEF_STMT (t);
+                  if (t_stmt && gimple_bb (t_stmt))
+                    {
+                      emit_gsi = gsi_for_stmt (t_stmt);
+                      if (!gsi_end_p (emit_gsi))
+                        gsi_next (&emit_gsi);
+                    }
+                }
+
+              for (unsigned li = 0; li < lanes; ++li)
+                {
+                  unsigned HOST_WIDE_INT bitpos = li * per_lane * elsz;
+                  tree lhs = make_ssa_name (vectype);
+                  tree lowpart = build3 (BIT_FIELD_REF, vectype, t,
+                                         TYPE_SIZE (vectype),
+                                         bitsize_int (bitpos));
+                  gassign *stmt = gimple_build_assign (lhs, lowpart);
+                  vect_finish_stmt_generation (vinfo, NULL, stmt, &emit_gsi);
+                  cache->subvec_defs[li * copies + ci] = lhs;
                 }
             }
-
-          vect_finish_stmt_generation (vinfo, NULL, stmt, &emit_gsi);
-          node->push_vec_def (lhs);
         }
+
+      for (unsigned ci = 0; ci < copies; ++ci)
+        node->push_vec_def (cache->subvec_defs[lane_idx * copies + ci]);
 
       return copies;
     }

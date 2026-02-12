@@ -1646,6 +1646,7 @@ extract_bit_field_as_subreg (machine_mode mode, rtx op0,
     = (VECTOR_MODE_P (mode)
        && VECTOR_MODE_P (op0_mode)
        && GET_MODE_INNER (mode) == GET_MODE_INNER (op0_mode)
+       && targetm.can_change_mode_class (op0_mode, mode, ALL_REGS)
        && targetm.modes_tieable_p (mode, op0_mode));
 
   if (multiple_p (bitnum, BITS_PER_UNIT, &bytenum)
