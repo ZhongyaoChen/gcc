@@ -1292,12 +1292,18 @@ complex_fms_pattern::matches (complex_operation_t op,
   /* TODO: Support invariants here, with the new layout CADD now
 	   can match before we get a chance to try CFMS.  */
   auto nodes = SLP_TREE_CHILDREN (root);
+  if (nodes.length () < 2)
+    return IFN_LAST;
   if (!vect_match_expression_p (nodes[1], MULT_EXPR)
       || vect_detect_pair_op (nodes[0]) != PLUS_MINUS)
     return IFN_LAST;
 
   auto childs = SLP_TREE_CHILDREN (nodes[0]);
+  if (childs.length () < 1)
+    return IFN_LAST;
   auto l0node = SLP_TREE_CHILDREN (childs[0]);
+  if (l0node.length () < 2)
+    return IFN_LAST;
 
   /* Now operand2+4 may lead to another expression.  */
   auto_vec<slp_tree> left_op, right_op;

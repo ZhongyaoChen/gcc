@@ -164,11 +164,11 @@ void
 _slp_tree::push_vec_def (gimple *def)
 {
   if (gphi *phi = dyn_cast <gphi *> (def))
-    vec_defs.quick_push (gimple_phi_result (phi));
+    vec_defs.safe_push (gimple_phi_result (phi));
   else
     {
       def_operand_p defop = single_ssa_def_operand (def, SSA_OP_ALL_DEFS);
-      vec_defs.quick_push (get_def_from_ptr (defop));
+      vec_defs.safe_push (get_def_from_ptr (defop));
     }
 }
 
@@ -3166,13 +3166,33 @@ fail:
 	  slp_tree child = children[0];
 	  children.truncate (0);
 
-	  bool can_rewire_child
-	    = (SLP_TREE_CHILDREN (child).length () == 1
-	       && SLP_TREE_CODE (SLP_TREE_CHILDREN (child)[0]) == VEC_PERM_EXPR);
+	  slp_tree rewire_base_child = NULL;
+	  if (SLP_TREE_PERMUTE_P (child))
+	    rewire_base_child = child;
+	  else if (SLP_TREE_CHILDREN (child).length () == 1
+		   && SLP_TREE_CHILDREN (child)[0]
+		   && SLP_TREE_CODE (SLP_TREE_CHILDREN (child)[0]) == VEC_PERM_EXPR)
+	    rewire_base_child = SLP_TREE_CHILDREN (child)[0];
+
+	  bool can_rewire_child = (rewire_base_child != NULL);
 
 	  if (split_two_operator_lanes)
 	    {
 	      unsigned plain_anchor_nodes = 0;
+
+	      tree split_vectype = vectype;
+	      unsigned HOST_WIDE_INT vect_nunits;
+	      if (stmts.length () > 0
+		  && TYPE_VECTOR_SUBPARTS (vectype).is_constant (&vect_nunits)
+		  && vect_nunits > 0
+		  && vect_nunits % stmts.length () == 0)
+		{
+		  unsigned HOST_WIDE_INT split_nunits = vect_nunits / stmts.length ();
+		  if (split_nunits > 1
+		      && split_nunits < vect_nunits)
+		    split_vectype = build_vector_type (TREE_TYPE (vectype),
+					       split_nunits);
+		}
 
 	      struct anchor_cache_entry
 	      {
@@ -3197,103 +3217,95 @@ fail:
 			&& is_a<gassign *> (scalar_stmt->stmt)
 			&& gimple_assign_cast_p (scalar_stmt->stmt))
 		      {
-			slp_tree base_child = SLP_TREE_CHILDREN (child)[0];
+			slp_tree base_child = rewire_base_child;
 			unsigned lane_idx = SLP_TREE_SCALAR_STMTS (child).length ();
 			stmt_vec_info child_stmt;
 			FOR_EACH_VEC_ELT (SLP_TREE_SCALAR_STMTS (child), lane_idx, child_stmt)
 			  if (child_stmt == scalar_stmt)
 			    break;
 
-			if (lane_idx < SLP_TREE_SCALAR_STMTS (child).length ()
-			    && lane_idx < SLP_TREE_LANE_PERMUTATION (base_child).length ())
+			if (lane_idx < SLP_TREE_SCALAR_STMTS (child).length ())
 			  {
-			    std::pair<unsigned, unsigned> base_perm
-			      = SLP_TREE_LANE_PERMUTATION (base_child)[lane_idx];
-			    unsigned base_child_nch = SLP_TREE_CHILDREN (base_child).length ();
-			    if (base_perm.first < base_child_nch)
+			    vec<stmt_vec_info> scalar_stmts = vNULL;
+			    scalar_stmts.safe_push (scalar_stmt);
+			    slp_tree onode = vect_create_new_slp_node (scalar_stmts, 1);
+			    SLP_TREE_CODE (onode)
+			      = gimple_assign_rhs_code (as_a<gassign *> (scalar_stmt->stmt));
+			    SLP_TREE_VECTYPE (onode) = split_vectype;
+			    onode->max_nunits = 1;
+
+			    bool direct_term_extract_p = false;
+			    if (SLP_TREE_PERMUTE_P (base_child)
+				&& SLP_TREE_CHILDREN (base_child).length ()
+				   == SLP_TREE_SCALAR_STMTS (base_child).length ()
+				&& SLP_TREE_LANE_PERMUTATION (base_child).length ()
+				   == SLP_TREE_CHILDREN (base_child).length ()
+				&& lane_idx < SLP_TREE_CHILDREN (base_child).length ())
 			      {
-				vec<stmt_vec_info> scalar_stmts = vNULL;
-				scalar_stmts.safe_push (scalar_stmt);
-				slp_tree onode = vect_create_new_slp_node (scalar_stmts, 1);
-				SLP_TREE_CODE (onode)
-				  = gimple_assign_rhs_code (as_a<gassign *> (scalar_stmt->stmt));
-				SLP_TREE_VECTYPE (onode) = vectype;
-				onode->max_nunits = child->max_nunits;
-
-				if (base_child_nch == 2)
+				direct_term_extract_p = true;
+				for (unsigned bi = 0;
+				     bi < SLP_TREE_CHILDREN (base_child).length ();
+				     ++bi)
 				  {
-				    vec<stmt_vec_info> lane_stmts = vNULL;
-				    if (lane_idx < SLP_TREE_SCALAR_STMTS (base_child).length ())
-				      lane_stmts.safe_push (SLP_TREE_SCALAR_STMTS (base_child)[lane_idx]);
-				    else
-				      lane_stmts.safe_push (scalar_stmt);
+				    auto p = SLP_TREE_LANE_PERMUTATION (base_child)[bi];
+				    if (p.first != bi || p.second != 0)
+				      {
+					direct_term_extract_p = false;
+					break;
+				      }
 
-				    slp_tree lane_node = vect_create_new_slp_node (lane_stmts, 2);
-				    SLP_TREE_CODE (lane_node) = VEC_PERM_EXPR;
-				    SLP_TREE_VECTYPE (lane_node) = SLP_TREE_VECTYPE (base_child);
-				    lane_node->max_nunits = base_child->max_nunits;
-				    slp_tree lane_op0 = SLP_TREE_CHILDREN (base_child)[0];
-				    slp_tree lane_op1 = SLP_TREE_CHILDREN (base_child)[1];
-				    SLP_TREE_CHILDREN (lane_node).quick_push (lane_op0);
-				    SLP_TREE_CHILDREN (lane_node).quick_push (lane_op1);
-				    SLP_TREE_REF_COUNT (lane_op0)++;
-				    SLP_TREE_REF_COUNT (lane_op1)++;
-				    SLP_TREE_LANE_PERMUTATION (lane_node).safe_push (base_perm);
-				    SLP_TREE_CHILDREN (onode).quick_push (lane_node);
-				    anchor_cache_entry entry;
-				    entry.scalar_stmt = scalar_stmt;
-				    entry.perm_idx = perm_idx;
-				    entry.node = onode;
-				    anchor_cache.safe_push (entry);
-				    return onode;
+				    slp_tree term = SLP_TREE_CHILDREN (base_child)[bi];
+				    if (!term
+					|| SLP_TREE_DEF_TYPE (term) != vect_internal_def
+					|| SLP_TREE_SCALAR_STMTS (term).length () != 1
+					|| SLP_TREE_SCALAR_STMTS (term)[0]
+					   != SLP_TREE_SCALAR_STMTS (base_child)[bi])
+				      {
+					direct_term_extract_p = false;
+					break;
+				      }
 				  }
+			      }
 
-				slp_tree selected = SLP_TREE_CHILDREN (base_child)[base_perm.first];
-				if (base_perm.second == 0)
-				  {
-				    SLP_TREE_CHILDREN (onode).quick_push (selected);
-				    SLP_TREE_REF_COUNT (selected)++;
-				    anchor_cache_entry entry;
-				    entry.scalar_stmt = scalar_stmt;
-				    entry.perm_idx = perm_idx;
-				    entry.node = onode;
-				    anchor_cache.safe_push (entry);
-				    return onode;
-				  }
-
+			    if (direct_term_extract_p)
+			      {
+				slp_tree term = SLP_TREE_CHILDREN (base_child)[lane_idx];
+				SLP_TREE_CHILDREN (onode).quick_push (term);
+				SLP_TREE_REF_COUNT (term)++;
+			      }
+			    else
+			      {
 				vec<stmt_vec_info> lane_stmts = vNULL;
 				if (lane_idx < SLP_TREE_SCALAR_STMTS (base_child).length ())
 				  lane_stmts.safe_push (SLP_TREE_SCALAR_STMTS (base_child)[lane_idx]);
 				else
 				  lane_stmts.safe_push (scalar_stmt);
 
-				slp_tree lane_node = vect_create_new_slp_node (lane_stmts, 2);
+				slp_tree lane_node = vect_create_new_slp_node (lane_stmts, 1);
 				SLP_TREE_CODE (lane_node) = VEC_PERM_EXPR;
-				SLP_TREE_VECTYPE (lane_node) = SLP_TREE_VECTYPE (selected);
-				lane_node->max_nunits = selected->max_nunits;
-				SLP_TREE_CHILDREN (lane_node).quick_push (selected);
-				SLP_TREE_CHILDREN (lane_node).quick_push (selected);
-				SLP_TREE_REF_COUNT (selected) += 2;
+				SLP_TREE_VECTYPE (lane_node) = split_vectype;
+				lane_node->max_nunits = 1;
+				SLP_TREE_CHILDREN (lane_node).quick_push (base_child);
+				SLP_TREE_REF_COUNT (base_child)++;
 				SLP_TREE_LANE_PERMUTATION (lane_node).safe_push
-				  (std::make_pair (0u, base_perm.second));
+				  (std::make_pair (0u, lane_idx));
 				SLP_TREE_CHILDREN (onode).quick_push (lane_node);
-				anchor_cache_entry entry;
-				entry.scalar_stmt = scalar_stmt;
-				entry.perm_idx = perm_idx;
-				entry.node = onode;
-				anchor_cache.safe_push (entry);
-				return onode;
 			      }
+			    anchor_cache_entry entry;
+			    entry.scalar_stmt = scalar_stmt;
+			    entry.perm_idx = perm_idx;
+			    entry.node = onode;
+			    anchor_cache.safe_push (entry);
+			    return onode;
 			  }
 		      }
 
 		    vec<stmt_vec_info> scalar_stmts = vNULL;
 		    scalar_stmts.safe_push (scalar_stmt);
-		    slp_tree pnode = vect_create_new_slp_node (scalar_stmts, 2);
+		    slp_tree pnode = vect_create_new_slp_node (scalar_stmts, 1);
 		    SLP_TREE_CODE (pnode) = VEC_PERM_EXPR;
-		    SLP_TREE_VECTYPE (pnode) = vectype;
-		    pnode->max_nunits = child->max_nunits;
-		    SLP_TREE_CHILDREN (pnode).quick_push (child);
+		    SLP_TREE_VECTYPE (pnode) = split_vectype;
+		    pnode->max_nunits = 1;
 		    SLP_TREE_CHILDREN (pnode).quick_push (child);
 		    SLP_TREE_LANE_PERMUTATION (pnode).safe_push
 		      (std::make_pair (0, perm_idx));
@@ -3313,10 +3325,10 @@ fail:
 		  vec<stmt_vec_info> scalar_stmts = vNULL;
 		  scalar_stmts.safe_push (lane_stmt);
 		  slp_tree term = vect_create_new_slp_node (scalar_stmts, 2);
-		  SLP_TREE_VECTYPE (term) = vectype;
+		  SLP_TREE_VECTYPE (term) = split_vectype;
 		  SLP_TREE_CODE (term)
 		    = gimple_assign_rhs_code (as_a<gassign *> (lane_stmt->stmt));
-		  term->max_nunits = child->max_nunits;
+		  term->max_nunits = 1;
 		  SLP_TREE_CHILDREN (term).quick_push
 		    (make_anchor_node (two_op_scalar_stmts[0][i],
 				       two_op_perm_indices[0][i]));
@@ -3327,7 +3339,7 @@ fail:
 		}
 
 	      if (plain_anchor_nodes > 0)
-		SLP_TREE_REF_COUNT (child) += plain_anchor_nodes * 2;
+		SLP_TREE_REF_COUNT (child) += plain_anchor_nodes;
 
 	      node = vect_create_new_slp_node (node, stmts, term_nodes.length ());
 	      SLP_TREE_VECTYPE (node) = vectype;
@@ -3345,10 +3357,9 @@ fail:
 	  for (i = 0; i < 2; i++)
 	    {
 	      slp_tree pnode
-		= vect_create_new_slp_node (two_op_scalar_stmts[i], 2);
+		= vect_create_new_slp_node (two_op_scalar_stmts[i], 1);
 	      SLP_TREE_CODE (pnode) = VEC_PERM_EXPR;
 	      SLP_TREE_VECTYPE (pnode) = vectype;
-	      SLP_TREE_CHILDREN (pnode).quick_push (child);
 	      SLP_TREE_CHILDREN (pnode).quick_push (child);
 	      lane_permutation_t& perm = SLP_TREE_LANE_PERMUTATION (pnode);
 	      children.safe_push (pnode);
@@ -3357,7 +3368,7 @@ fail:
 		perm.safe_push (std::make_pair (0, two_op_perm_indices[i][j]));
 	    }
 
-	  SLP_TREE_REF_COUNT (child) += 4;
+	  SLP_TREE_REF_COUNT (child) += 2;
 	}
 
       slp_tree one = new _slp_tree;
@@ -8571,8 +8582,26 @@ vect_update_slp_vf_for_node (slp_tree node, poly_uint64 &vf,
   if (visited.add (node))
     return;
 
-  for (slp_tree child : SLP_TREE_CHILDREN (node))
-    vect_update_slp_vf_for_node (child, vf, visited);
+  bool synthetic_split_anchor_p = false;
+  if (SLP_TREE_PERMUTE_P (node)
+      && SLP_TREE_LANES (node) == 1
+      && known_eq (node->max_nunits, poly_uint64 (1))
+      && SLP_TREE_CHILDREN (node).length () == 1
+      && SLP_TREE_CHILDREN (node)[0]
+      && SLP_TREE_DEF_TYPE (SLP_TREE_CHILDREN (node)[0]) == vect_internal_def
+      && known_gt (SLP_TREE_CHILDREN (node)[0]->max_nunits,
+		   poly_uint64 (1))
+      && !SLP_TREE_SCALAR_STMTS (node).is_empty ())
+    {
+      stmt_vec_info scalar_stmt = SLP_TREE_SCALAR_STMTS (node)[0];
+      if (is_a <gassign *> (scalar_stmt->stmt)
+	  && gimple_assign_cast_p (scalar_stmt->stmt))
+	synthetic_split_anchor_p = true;
+    }
+
+  if (!synthetic_split_anchor_p)
+    for (slp_tree child : SLP_TREE_CHILDREN (node))
+      vect_update_slp_vf_for_node (child, vf, visited);
 
   /* We do not visit SLP nodes for constants or externals - those neither
      have a vector type set yet (vectorizable_* does this) nor do they
@@ -11343,6 +11372,7 @@ vect_transform_slp_perm_load_1 (vec_info *vinfo, slp_tree node,
   unsigned int nvectors_per_build;
   unsigned int in_nlanes;
   bool repeating_p = (group_size == dr_group_size
+		      && group_size <= 2
 		      && multiple_p (nunits, group_size));
   if (repeating_p)
     {
@@ -11671,17 +11701,557 @@ vect_add_slp_permutation (vec_info *vinfo, gimple_stmt_iterator *gsi,
   node->push_vec_def (perm_stmt);
 }
 
-/* Subroutine of vectorizable_slp_permutation.  Check whether the target
-   can perform permutation PERM on the (1 or 2) input nodes in CHILDREN.
-   If GSI is nonnull, emit the permutation there.
+typedef std::pair<std::pair<unsigned, unsigned>, poly_uint64>
+  slp_perm_vector_elt;
 
-   When GSI is null, the only purpose of NODE is to give properties
-   of the result, such as the vector type and number of SLP lanes.
-   The node does not need to be a VEC_PERM_EXPR.
+/* Per-base-node cache for shared split-anchor transpose lowering.
+   This is used only during transformation (GSI != nullptr).  */
 
-   If the target supports the operation, return the number of individual
-   VEC_PERM_EXPRs needed, otherwise return -1.  Print information to the
-   dump file if DUMP_P is true.  */
+struct slp_anchor_cache_data : vect_data
+{
+  static const unsigned MAGIC = 0xA63C4E51U;
+
+  slp_anchor_cache_data ()
+    : magic (MAGIC), lanes (0), vectype (NULL_TREE)
+  {}
+
+  unsigned magic;
+  unsigned lanes;
+  tree vectype;
+  auto_vec<tree> transpose_defs;
+};
+
+/* Try to lower multi-source SLP permutations (3+ vector sources) by
+   concatenating sources into a single wider vector and applying one
+   gather-style permutation on the wide vector.  Return the number of
+   emitted permutes on success, -1 otherwise.  */
+
+static int
+vectorizable_slp_permutation_multi_source_family
+  (vec_info *vinfo, gimple_stmt_iterator *gsi, slp_tree node,
+   tree vectype, tree op_vectype, const vec<slp_perm_vector_elt> &vperm,
+   uint64_t npatterns, unsigned nelts_per_pattern,
+   vec<slp_tree> &children, bool dump_p)
+{
+  if (vperm.is_empty ()
+      || !types_compatible_p (TREE_TYPE (vectype), TREE_TYPE (op_vectype)))
+    return -1;
+
+  unsigned HOST_WIDE_INT out_nunits;
+  unsigned HOST_WIDE_INT in_nunits;
+  if (!TYPE_VECTOR_SUBPARTS (vectype).is_constant (&out_nunits)
+      || !TYPE_VECTOR_SUBPARTS (op_vectype).is_constant (&in_nunits)
+      || out_nunits == 0
+      || in_nunits == 0)
+    return -1;
+
+  vec_perm_builder mask_template;
+  mask_template.new_vector (out_nunits, npatterns, nelts_per_pattern);
+  unsigned int count = mask_template.encoded_nelts ();
+  if (count == 0 || vperm.length () % count != 0)
+    return -1;
+
+  auto build_two_input_indices
+    = [&](const auto_vec<unsigned HOST_WIDE_INT, 64> &mask_values,
+	 vec_perm_indices &indices,
+	 const char *tag) -> bool
+      {
+	if (count != mask_values.length ())
+	  {
+	    if (dump_p)
+	      dump_printf_loc (MSG_NOTE, vect_location,
+			       "multi-source family reject %p: mask len mismatch"
+			       " %s count=%u vals=%u npatterns=%wu nelts=%u\n",
+			       (void *) node, tag, count,
+			       mask_values.length (), npatterns,
+			       nelts_per_pattern);
+	    return false;
+	  }
+
+	vec_perm_builder mask;
+	mask.new_vector (out_nunits, npatterns, nelts_per_pattern);
+	mask.quick_grow (count);
+	for (unsigned int mi = 0; mi < count; ++mi)
+	  mask[mi] = mask_values[mi];
+
+	indices.new_vector (mask, 2, TYPE_VECTOR_SUBPARTS (op_vectype));
+	if (!can_vec_perm_const_p (TYPE_MODE (vectype), TYPE_MODE (op_vectype),
+			     indices))
+	  {
+	    if (dump_p)
+	      dump_printf_loc (MSG_NOTE, vect_location,
+			       "multi-source family reject %p: unsupported"
+			       " %s mask\n",
+			       (void *) node, tag);
+	    return false;
+	  }
+
+	return true;
+      };
+
+  auto emit_two_input_perm
+    = [&](tree op0, tree op1, vec_perm_indices &indices) -> tree
+      {
+	tree mask_vec = vect_gen_perm_mask_checked (vectype, indices);
+	tree lhs = make_ssa_name (vectype);
+	gassign *stmt = gimple_build_assign (lhs, VEC_PERM_EXPR,
+				      op0, op1, mask_vec);
+	vect_finish_stmt_generation (vinfo, NULL, stmt, gsi);
+	return lhs;
+      };
+
+  unsigned nchunks = vperm.length () / count;
+  unsigned nperms = 0;
+  for (unsigned chunk = 0; chunk < nchunks; ++chunk)
+    {
+      unsigned base = chunk * count;
+
+      auto_vec<std::pair<unsigned, unsigned>, 4> sources;
+      auto_vec<unsigned HOST_WIDE_INT, 64> lanes;
+      auto_vec<unsigned char, 64> lane_sources;
+      lanes.reserve_exact (count);
+      lane_sources.reserve_exact (count);
+
+      for (unsigned i = 0; i < count; ++i)
+	{
+	  const slp_perm_vector_elt &elt = vperm[base + i];
+	  unsigned child_idx = elt.first.first;
+	  unsigned vec_idx = elt.first.second;
+	  unsigned HOST_WIDE_INT lane_idx;
+
+	  if (!elt.second.is_constant (&lane_idx))
+	    return -1;
+
+	  if (child_idx >= children.length () || !children[child_idx])
+	    return -1;
+
+	  if (vect_get_num_copies (vinfo, children[child_idx]) <= vec_idx)
+	    return -1;
+
+	  unsigned src_pos;
+	  for (src_pos = 0; src_pos < sources.length (); ++src_pos)
+	    if (sources[src_pos].first == child_idx
+		&& sources[src_pos].second == vec_idx)
+	      break;
+
+	  if (src_pos == sources.length ())
+	    {
+	      if (sources.length () == 4)
+		{
+		  if (dump_p)
+		    dump_printf_loc (MSG_NOTE, vect_location,
+				     "multi-source family reject %p: too many"
+				     " source vectors\n",
+				     (void *) node);
+		  return -1;
+		}
+	      sources.quick_push ({child_idx, vec_idx});
+	    }
+
+	  lanes.quick_push (lane_idx);
+	  lane_sources.quick_push (src_pos);
+	}
+
+      unsigned src_count = sources.length ();
+      if (src_count <= 2)
+	return -1;
+
+      auto_vec<unsigned, 4> unique_child_ids;
+      for (unsigned si = 0; si < src_count; ++si)
+	{
+	  unsigned child_idx = sources[si].first;
+	  bool seen = false;
+	  for (unsigned ci = 0; ci < unique_child_ids.length (); ++ci)
+	    if (unique_child_ids[ci] == child_idx)
+	      {
+		seen = true;
+		break;
+	      }
+	  if (!seen)
+	    unique_child_ids.quick_push (child_idx);
+	}
+
+      bool same_child_family = (unique_child_ids.length () == 1);
+      bool butterfly_family = (unique_child_ids.length () >= 3);
+      if (!same_child_family && !butterfly_family)
+	{
+	  if (dump_p)
+	    dump_printf_loc (MSG_NOTE, vect_location,
+			     "multi-source family reject %p: unsupported"
+			     " unique-children=%u\n",
+			     (void *) node, unique_child_ids.length ());
+	  return -1;
+	}
+
+      if (dump_p)
+	dump_printf_loc (MSG_NOTE, vect_location,
+			 "multi-source family candidate %p: src_count=%u"
+			 " out_nunits=%wu chunk=%u/%u family=%s\n",
+			 (void *) node, src_count, out_nunits,
+			 chunk + 1, nchunks,
+			 same_child_family ? "same-child" : "butterfly");
+
+      if (in_nunits != out_nunits)
+	{
+	  bool interleave4_p = (src_count == 4
+			       && out_nunits == in_nunits * 4
+			       && count == out_nunits);
+	  if (interleave4_p)
+	    for (unsigned i = 0; i < count; ++i)
+	      if (lane_sources[i] != (i & 3)
+		  || lanes[i] != i / 4)
+		{
+		  interleave4_p = false;
+		  break;
+		}
+
+	  if (!interleave4_p)
+	    {
+	      if (dump_p)
+		dump_printf_loc (MSG_NOTE, vect_location,
+				 "multi-source family reject %p: unsupported"
+				 " widening pattern in=%wu out=%wu src=%u\n",
+				 (void *) node, in_nunits, out_nunits,
+				 src_count);
+	      return -1;
+	    }
+
+	  vec_perm_builder gather_mask;
+	  gather_mask.new_vector (out_nunits, out_nunits, 1);
+	  unsigned gcount = gather_mask.encoded_nelts ();
+	  if (gcount != out_nunits)
+	    return -1;
+	  gather_mask.quick_grow (gcount);
+
+	  for (unsigned i = 0; i < gcount; ++i)
+	    gather_mask[i] = (i / 4) + (i & 3) * in_nunits;
+
+	  vec_perm_indices gather_indices;
+	  gather_indices.new_vector (gather_mask, 1, TYPE_VECTOR_SUBPARTS (vectype));
+	  if (!can_vec_perm_const_p (TYPE_MODE (vectype), TYPE_MODE (vectype),
+				     gather_indices))
+	    {
+	      if (dump_p)
+		dump_printf_loc (MSG_NOTE, vect_location,
+				 "multi-source family reject %p: unsupported"
+				 " widening gather mask\n",
+				 (void *) node);
+	      return -1;
+	    }
+
+	  nperms += 1;
+	  if (!gsi)
+	    continue;
+
+	  auto get_source_def = [&](unsigned src_id) -> tree
+	    {
+	      std::pair<unsigned, unsigned> src = sources[src_id];
+	      return vect_get_slp_vect_def (children[src.first], src.second);
+	    };
+
+	  auto emit_concat_typed
+	    = [&](tree out_type, tree lo, tree hi) -> tree
+	      {
+		tree lhs = make_ssa_name (out_type);
+		tree ctor = build_constructor_va (out_type, 2,
+					 NULL_TREE, lo,
+					 NULL_TREE, hi);
+		gassign *stmt = gimple_build_assign (lhs, ctor);
+		vect_finish_stmt_generation (vinfo, NULL, stmt, gsi);
+		return lhs;
+	      };
+
+	  tree src0 = get_source_def (0);
+	  tree src1 = get_source_def (1);
+	  tree src2 = get_source_def (2);
+	  tree src3 = get_source_def (3);
+
+	  unsigned HOST_WIDE_INT mid_nunits = in_nunits * 2;
+	  tree mid_vectype = build_vector_type (TREE_TYPE (vectype), mid_nunits);
+
+	  tree ab = emit_concat_typed (mid_vectype, src0, src1);
+	  tree cd = emit_concat_typed (mid_vectype, src2, src3);
+	  tree wide = emit_concat_typed (vectype, ab, cd);
+
+	  tree mask_vec = vect_gen_perm_mask_checked (vectype, gather_indices);
+	  tree result = make_ssa_name (vectype);
+	  gassign *perm_stmt = gimple_build_assign (result, VEC_PERM_EXPR,
+					     wide, wide, mask_vec);
+	  vect_finish_stmt_generation (vinfo, NULL, perm_stmt, gsi);
+	  node->push_vec_def (result);
+	  continue;
+	}
+
+      auto_vec<unsigned HOST_WIDE_INT, 64> mask_ab;
+      auto_vec<unsigned HOST_WIDE_INT, 64> mask_cd;
+      auto_vec<unsigned HOST_WIDE_INT, 64> mask_final;
+      mask_ab.reserve_exact (count);
+      mask_cd.reserve_exact (count);
+      mask_final.reserve_exact (count);
+
+      for (unsigned i = 0; i < count; ++i)
+	{
+	  unsigned src_pos = lane_sources[i];
+	  unsigned HOST_WIDE_INT lane_idx = lanes[i];
+
+	  if (src_pos == 0)
+	    mask_ab.quick_push (lane_idx);
+	  else if (src_pos == 1)
+	    mask_ab.quick_push (lane_idx + out_nunits);
+	  else
+	    mask_ab.quick_push (0);
+
+	  if (src_pos == 2)
+	    mask_cd.quick_push (lane_idx);
+	  else if (src_count == 4 && src_pos == 3)
+	    mask_cd.quick_push (lane_idx + out_nunits);
+	  else
+	    mask_cd.quick_push (0);
+
+	  if (src_pos <= 1)
+	    mask_final.quick_push (lane_idx);
+	  else
+	    mask_final.quick_push (lane_idx + out_nunits);
+	}
+
+      vec_perm_indices ab_indices;
+      vec_perm_indices cd_indices;
+      vec_perm_indices final_indices;
+      if (!build_two_input_indices (mask_ab, ab_indices, "ab")
+	  || !build_two_input_indices (mask_cd, cd_indices, "cd")
+	  || !build_two_input_indices (mask_final, final_indices, "final"))
+	return -1;
+
+      nperms += 3;
+      if (!gsi)
+	continue;
+
+      auto get_source_def = [&](unsigned src_id) -> tree
+	{
+	  std::pair<unsigned, unsigned> src = sources[src_id];
+	  return vect_get_slp_vect_def (children[src.first], src.second);
+	};
+
+      tree src0 = get_source_def (0);
+      tree src1 = get_source_def (1);
+      tree src2 = get_source_def (2);
+      tree src3 = (src_count == 4 ? get_source_def (3) : src2);
+
+      tree ab = emit_two_input_perm (src0, src1, ab_indices);
+      tree cd = emit_two_input_perm (src2, src3, cd_indices);
+      tree result = emit_two_input_perm (ab, cd, final_indices);
+      node->push_vec_def (result);
+    }
+
+  return nperms;
+}
+
+/* Try to lower single-lane split anchors by reusing one shared transpose
+   per copy from their common base child, then extracting lane groups.  */
+
+static int
+vectorizable_slp_permutation_shared_anchor
+  (vec_info *vinfo, gimple_stmt_iterator *gsi, slp_tree node,
+   lane_permutation_t &perm, vec<slp_tree> &children,
+   tree vectype)
+{
+  if (children.length () != 1
+      || perm.length () != 1
+      || SLP_TREE_LANES (node) != 1
+      || !known_eq (node->max_nunits, 1U))
+    return -1;
+
+  slp_tree base = children[0];
+  if (!base)
+    return -1;
+
+  tree base_vectype = SLP_TREE_VECTYPE (base);
+  if (!base_vectype
+      || !types_compatible_p (TREE_TYPE (base_vectype), TREE_TYPE (vectype)))
+    return -1;
+
+  unsigned lanes = SLP_TREE_SCALAR_STMTS (base).length ();
+  if (lanes < 2 || lanes > 4)
+    return -1;
+
+  unsigned lane_idx = perm[0].second;
+  if (lane_idx >= lanes)
+    return -1;
+
+  unsigned HOST_WIDE_INT base_nunits;
+  unsigned HOST_WIDE_INT out_nunits;
+  if (!TYPE_VECTOR_SUBPARTS (base_vectype).is_constant (&base_nunits)
+      || !TYPE_VECTOR_SUBPARTS (vectype).is_constant (&out_nunits)
+      || base_nunits == 0
+      || base_nunits % lanes != 0)
+    return -1;
+
+  unsigned per_lane = base_nunits / lanes;
+  bool emit_subvector = (out_nunits == per_lane);
+
+  if (!emit_subvector
+      && (out_nunits != base_nunits || out_nunits % lanes != 0))
+    return -1;
+
+  slp_anchor_cache_data *cache = nullptr;
+  if (!base->data)
+    {
+      cache = new slp_anchor_cache_data ();
+      base->data = cache;
+    }
+  else
+    {
+      cache = static_cast<slp_anchor_cache_data *> (base->data);
+      if (cache->magic != slp_anchor_cache_data::MAGIC)
+        return -1;
+    }
+
+  unsigned copies = vect_get_num_copies (vinfo, base);
+
+  if (!gsi)
+    return copies * (emit_subvector ? 1 : 2);
+
+  if (cache->transpose_defs.length () != copies
+      || cache->lanes != lanes
+      || cache->vectype != base_vectype)
+    {
+      cache->transpose_defs.truncate (0);
+      cache->transpose_defs.reserve_exact (copies);
+      cache->lanes = lanes;
+      cache->vectype = base_vectype;
+
+      unsigned per_lane_base = base_nunits / lanes;
+      vec_perm_builder transpose_mask;
+      transpose_mask.new_vector (base_nunits, base_nunits, 1);
+      unsigned count = transpose_mask.encoded_nelts ();
+      if (count != base_nunits)
+        return -1;
+      transpose_mask.quick_grow (count);
+
+      unsigned k = 0;
+      for (unsigned l = 0; l < lanes; ++l)
+        for (unsigned e = 0; e < per_lane_base; ++e)
+          transpose_mask[k++] = e * lanes + l;
+
+      vec_perm_indices transpose_indices;
+      transpose_indices.new_vector (transpose_mask, 2,
+                                    TYPE_VECTOR_SUBPARTS (base_vectype));
+      if (!can_vec_perm_const_p (TYPE_MODE (base_vectype),
+                                 TYPE_MODE (base_vectype),
+                                 transpose_indices))
+        return -1;
+
+      tree transpose_mask_vec
+        = vect_gen_perm_mask_checked (base_vectype, transpose_indices);
+
+      for (unsigned ci = 0; ci < copies; ++ci)
+        {
+          tree def = vect_get_slp_vect_def (base, ci);
+          tree lhs = make_ssa_name (base_vectype);
+          gassign *stmt = gimple_build_assign (lhs, VEC_PERM_EXPR,
+                                               def, def,
+                                               transpose_mask_vec);
+
+          gimple_stmt_iterator insert_gsi = *gsi;
+          if (TREE_CODE (def) == SSA_NAME)
+            {
+              gimple *def_stmt = SSA_NAME_DEF_STMT (def);
+              if (def_stmt && gimple_bb (def_stmt))
+                {
+                  insert_gsi = gsi_for_stmt (def_stmt);
+                  if (!gsi_end_p (insert_gsi))
+                    gsi_next (&insert_gsi);
+                }
+            }
+
+          vect_finish_stmt_generation (vinfo, NULL, stmt, &insert_gsi);
+          cache->transpose_defs.safe_push (lhs);
+
+        }
+    }
+
+  if (emit_subvector)
+    {
+      unsigned HOST_WIDE_INT elsz
+        = tree_to_uhwi (TYPE_SIZE (TREE_TYPE (base_vectype)));
+      unsigned HOST_WIDE_INT bitpos = lane_idx * per_lane * elsz;
+
+      for (unsigned ci = 0; ci < copies; ++ci)
+        {
+          tree t = cache->transpose_defs[ci];
+          tree lhs = make_ssa_name (vectype);
+          tree lowpart = build3 (BIT_FIELD_REF, vectype, t,
+                                 TYPE_SIZE (vectype),
+                                 bitsize_int (bitpos));
+          gassign *stmt = gimple_build_assign (lhs, lowpart);
+
+          gimple_stmt_iterator emit_gsi = *gsi;
+          if (TREE_CODE (t) == SSA_NAME)
+            {
+              gimple *t_stmt = SSA_NAME_DEF_STMT (t);
+              if (t_stmt && gimple_bb (t_stmt))
+                {
+                  emit_gsi = gsi_for_stmt (t_stmt);
+                  if (!gsi_end_p (emit_gsi))
+                    gsi_next (&emit_gsi);
+                }
+            }
+
+          vect_finish_stmt_generation (vinfo, NULL, stmt, &emit_gsi);
+          node->push_vec_def (lhs);
+        }
+
+      return copies;
+    }
+
+  unsigned repeat_per_lane = out_nunits / lanes;
+  vec_perm_builder extract_mask;
+  extract_mask.new_vector (out_nunits, out_nunits, 1);
+  unsigned count = extract_mask.encoded_nelts ();
+  if (count != out_nunits)
+    return -1;
+  extract_mask.quick_grow (count);
+
+  unsigned base_off = lane_idx * repeat_per_lane;
+  unsigned k = 0;
+  for (unsigned rep = 0; rep < lanes; ++rep)
+    for (unsigned e = 0; e < repeat_per_lane; ++e)
+      extract_mask[k++] = base_off + e;
+
+  vec_perm_indices extract_indices;
+  extract_indices.new_vector (extract_mask, 2,
+                              TYPE_VECTOR_SUBPARTS (vectype));
+  if (!can_vec_perm_const_p (TYPE_MODE (vectype), TYPE_MODE (vectype),
+                             extract_indices))
+    return -1;
+
+  tree extract_mask_vec = vect_gen_perm_mask_checked (vectype, extract_indices);
+  for (unsigned ci = 0; ci < copies; ++ci)
+    {
+      tree t = cache->transpose_defs[ci];
+      tree lhs = make_ssa_name (vectype);
+      gassign *stmt = gimple_build_assign (lhs, VEC_PERM_EXPR,
+                                           t, t, extract_mask_vec);
+
+      gimple_stmt_iterator emit_gsi = *gsi;
+      if (TREE_CODE (t) == SSA_NAME)
+        {
+          gimple *t_stmt = SSA_NAME_DEF_STMT (t);
+          if (t_stmt && gimple_bb (t_stmt))
+            {
+              emit_gsi = gsi_for_stmt (t_stmt);
+              if (!gsi_end_p (emit_gsi))
+                gsi_next (&emit_gsi);
+            }
+        }
+
+      vect_finish_stmt_generation (vinfo, NULL, stmt, &emit_gsi);
+      node->push_vec_def (lhs);
+    }
+
+  return copies;
+}
+
 
 static int
 vectorizable_slp_permutation_1 (vec_info *vinfo, gimple_stmt_iterator *gsi,
@@ -11689,6 +12259,20 @@ vectorizable_slp_permutation_1 (vec_info *vinfo, gimple_stmt_iterator *gsi,
 				vec<slp_tree> &children, bool dump_p)
 {
   tree vectype = SLP_TREE_VECTYPE (node);
+
+  if (children.length () == 1
+      && perm.length () == 1
+      && SLP_TREE_LANES (node) == 1
+      && known_eq (node->max_nunits, 1U)
+      && SLP_TREE_PERMUTE_P (node))
+    {
+      int shared = vectorizable_slp_permutation_shared_anchor (vinfo, gsi,
+                                                                node, perm,
+                                                                children,
+                                                                vectype);
+      if (shared >= 0)
+        return shared;
+    }
 
   /* ???  We currently only support all same vector input types
      while the SLP IL should really do a concat + select and thus accept
@@ -11752,6 +12336,11 @@ vectorizable_slp_permutation_1 (vec_info *vinfo, gimple_stmt_iterator *gsi,
     }
 
   gcc_assert (perm.length () == SLP_TREE_LANES (node));
+
+  /* Multi-source split trees are better modeled with explicit masks
+     instead of the repeating representation to keep chunking stable.  */
+  if (children.length () > 2)
+    repeating_p = false;
 
   /* Load-lanes permute.  This permute only acts as a forwarder to
      select the correct vector def of the load-lanes load which
@@ -11854,7 +12443,32 @@ vectorizable_slp_permutation_1 (vec_info *vinfo, gimple_stmt_iterator *gsi,
       unpack_factor = 1;
     }
   unsigned olanes = unpack_factor * ncopies * SLP_TREE_LANES (node);
-  gcc_assert (repeating_p || multiple_p (olanes, nunits));
+  bool expanded_single_lane_anchor_p = false;
+  unsigned expanded_from_olanes = olanes;
+  if (!repeating_p && !multiple_p (olanes, nunits))
+    {
+      unsigned HOST_WIDE_INT const_nunits;
+      if (children.length () == 1
+	  && SLP_TREE_LANES (node) == 1
+	  && perm.length () == 1
+	  && known_eq (node->max_nunits, 1U)
+	  && TYPE_VECTOR_SUBPARTS (vectype).is_constant (&const_nunits)
+	  && const_nunits > olanes
+	  && const_nunits % olanes == 0)
+	{
+	  expanded_single_lane_anchor_p = true;
+	  expanded_from_olanes = olanes;
+	  olanes = const_nunits;
+	}
+      else
+	{
+	  if (dump_p)
+	    dump_printf_loc (MSG_MISSED_OPTIMIZATION, vect_location,
+			     "unsupported permutation %p: lanes=%u nunits mismatch\n",
+			     (void *) node, olanes);
+	  return -1;
+	}
+    }
 
   /* Compute the { { SLP operand, vector index}, lane } permutation sequence
      from the { SLP operand, scalar lane } permutation as recorded in the
@@ -11894,6 +12508,18 @@ vectorizable_slp_permutation_1 (vec_info *vinfo, gimple_stmt_iterator *gsi,
 	}
     }
 
+  if (expanded_single_lane_anchor_p)
+    {
+      unsigned base_nelts = vperm.length ();
+      gcc_assert (base_nelts == expanded_from_olanes);
+      while (vperm.length () < olanes)
+	vperm.quick_push (vperm[(vperm.length () - base_nelts) % base_nelts]);
+      if (dump_p)
+	dump_printf_loc (MSG_NOTE, vect_location,
+			 "expanded single-lane anchor permutation %p: %u -> %u lanes\n",
+			 (void *) node, expanded_from_olanes, olanes);
+    }
+
   if (dump_p)
     {
       dump_printf_loc (MSG_NOTE, vect_location,
@@ -11918,6 +12544,15 @@ vectorizable_slp_permutation_1 (vec_info *vinfo, gimple_stmt_iterator *gsi,
 	}
       dump_printf (MSG_NOTE, "\n");
     }
+
+  int multi_input_nperms
+    = vectorizable_slp_permutation_multi_source_family (vinfo, gsi, node,
+                                                        vectype, op_vectype,
+                                                        vperm, npatterns,
+                                                        nelts_per_pattern,
+                                                        children, dump_p);
+  if (multi_input_nperms >= 0)
+    return multi_input_nperms;
 
   /* We can only handle two-vector permutes, everything else should
      be lowered on the SLP level.  The following is closely inspired

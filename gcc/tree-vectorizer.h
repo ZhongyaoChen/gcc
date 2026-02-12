@@ -2329,6 +2329,28 @@ vect_get_num_copies (vec_info *vinfo, slp_tree node)
   vf *= SLP_TREE_LANES (node);
   tree vectype = SLP_TREE_VECTYPE (node);
 
+  /* Some synthetic single-lane split nodes intentionally keep a wider
+     vector type than VF*lanes to preserve the split tree shape.
+     If VF is not a multiple of the node's vector length, inherit copy
+     count from children to avoid exact_div ICE during exploratory modes.  */
+  if (!multiple_p (vf, TYPE_VECTOR_SUBPARTS (vectype)))
+    {
+      if (known_eq (node->max_nunits, poly_uint64 (1))
+	  && !SLP_TREE_CHILDREN (node).is_empty ())
+	{
+	  unsigned copies = vect_get_num_copies (vinfo, SLP_TREE_CHILDREN (node)[0]);
+	  for (unsigned ci = 1; ci < SLP_TREE_CHILDREN (node).length (); ++ci)
+	    {
+	      unsigned cc = vect_get_num_copies (vinfo, SLP_TREE_CHILDREN (node)[ci]);
+	      if (cc < copies)
+		copies = cc;
+	    }
+	  return copies;
+	}
+
+      return 1;
+    }
+
   return vect_get_num_vectors (vf, vectype);
 }
 
