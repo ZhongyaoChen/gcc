@@ -1642,10 +1642,17 @@ extract_bit_field_as_subreg (machine_mode mode, rtx op0,
 			     poly_uint64 bitsize, poly_uint64 bitnum)
 {
   poly_uint64 bytenum;
+  bool vector_subreg_ok_p
+    = (VECTOR_MODE_P (mode)
+       && VECTOR_MODE_P (op0_mode)
+       && GET_MODE_INNER (mode) == GET_MODE_INNER (op0_mode)
+       && targetm.modes_tieable_p (mode, op0_mode));
+
   if (multiple_p (bitnum, BITS_PER_UNIT, &bytenum)
       && known_eq (bitsize, GET_MODE_BITSIZE (mode))
       && lowpart_bit_field_p (bitnum, bitsize, op0_mode)
-      && TRULY_NOOP_TRUNCATION_MODES_P (mode, op0_mode))
+      && (TRULY_NOOP_TRUNCATION_MODES_P (mode, op0_mode)
+          || vector_subreg_ok_p))
     return force_subreg (mode, op0, op0_mode, bytenum);
   return NULL_RTX;
 }
@@ -1725,6 +1732,18 @@ extract_bit_field_1 (rtx str_rtx, poly_uint64 bitsize, poly_uint64 bitnum,
 
 	  if (new_mode != GET_MODE (op0))
 	    op0 = gen_lowpart (new_mode, op0);
+
+	  /* Prefer direct subreg extraction for multi-register vectors.
+	     This avoids creating explicit vec_extract sequences (e.g. slides)
+	     when the target can tie the modes and address the slice directly.  */
+	  if (VECTOR_MODE_P (mode))
+	    {
+	      rtx sub = extract_bit_field_as_subreg (mode, op0, outermode,
+					     bitsize, bitnum);
+	      if (sub)
+		return sub;
+	    }
+
 	  create_output_operand (&ops[0], target, innermode);
 	  ops[0].target = 1;
 	  create_input_operand (&ops[1], op0, outermode);
