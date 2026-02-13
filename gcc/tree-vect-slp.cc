@@ -11953,29 +11953,19 @@ vectorizable_slp_permutation_multi_source_family
 	      return vect_get_slp_vect_def (children[src.first], src.second);
 	    };
 
-	  auto emit_concat_typed
-	    = [&](tree out_type, tree lo, tree hi) -> tree
-	      {
-		tree lhs = make_ssa_name (out_type);
-		tree ctor = build_constructor_va (out_type, 2,
-					 NULL_TREE, lo,
-					 NULL_TREE, hi);
-		gassign *stmt = gimple_build_assign (lhs, ctor);
-		vect_finish_stmt_generation (vinfo, NULL, stmt, gsi);
-		return lhs;
-	      };
-
 	  tree src0 = get_source_def (0);
 	  tree src1 = get_source_def (1);
 	  tree src2 = get_source_def (2);
 	  tree src3 = get_source_def (3);
 
-	  unsigned HOST_WIDE_INT mid_nunits = in_nunits * 2;
-	  tree mid_vectype = build_vector_type (TREE_TYPE (vectype), mid_nunits);
-
-	  tree ab = emit_concat_typed (mid_vectype, src0, src1);
-	  tree cd = emit_concat_typed (mid_vectype, src2, src3);
-	  tree wide = emit_concat_typed (vectype, ab, cd);
+	  tree wide = make_ssa_name (vectype);
+	  tree wide_ctor = build_constructor_va (vectype, 4,
+					 NULL_TREE, src0,
+					 NULL_TREE, src1,
+					 NULL_TREE, src2,
+					 NULL_TREE, src3);
+	  gassign *wide_stmt = gimple_build_assign (wide, wide_ctor);
+	  vect_finish_stmt_generation (vinfo, NULL, wide_stmt, gsi);
 
 	  tree mask_vec = vect_gen_perm_mask_checked (vectype, gather_indices);
 	  tree result = make_ssa_name (vectype);
