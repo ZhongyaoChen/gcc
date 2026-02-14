@@ -1832,6 +1832,47 @@ vect_build_slp_tree_2 (vec_info *vinfo, slp_tree node,
 		       bool *matches, unsigned *limit, unsigned *tree_size,
 		       scalar_stmts_to_slp_tree_map_t *bst_map);
 
+/* Return true if grouping two-operator lanes by operator would require
+   an additional reorder between two two-operator stages.  */
+
+static bool
+vect_two_operator_interleaved_deps_p (const vec<unsigned> &perm0,
+				      const vec<unsigned> &perm1)
+{
+  if (perm0.length () != perm1.length ()
+      || perm0.length () < 2)
+    return false;
+
+  for (unsigned i = 0; i < perm0.length (); ++i)
+    for (unsigned j = i + 1; j < perm0.length (); ++j)
+      {
+	unsigned p00 = perm0[i];
+	unsigned p01 = perm0[j];
+	unsigned p10 = perm1[i];
+	unsigned p11 = perm1[j];
+
+	if (p00 == p01 || p10 == p11)
+	  continue;
+
+	if ((p00 < p01) != (p10 < p11))
+	  return true;
+      }
+
+  /* Hadamard-like two-operator stages can form duplicated lane-pairs
+     (for example {0,2,0,2} / {1,3,1,3}).  Grouping by operator then
+     introduces an avoidable regrouping permutation between stages.  */
+  if (perm0.length () == 4
+      && perm0[0] == perm0[2]
+      && perm0[1] == perm0[3]
+      && perm1[0] == perm1[2]
+      && perm1[1] == perm1[3]
+      && perm0[0] != perm0[1]
+      && perm1[0] != perm1[1])
+    return true;
+
+  return false;
+}
+
 static slp_tree
 vect_build_slp_tree (vec_info *vinfo,
 		     vec<stmt_vec_info> stmts, unsigned int group_size,
@@ -3161,6 +3202,9 @@ fail:
 		}
 
 	      split_two_operator_lanes &= plus_cnt > 0 && minus_cnt > 0;
+	      split_two_operator_lanes
+		&= vect_two_operator_interleaved_deps_p
+		     (two_op_perm_indices[0], two_op_perm_indices[1]);
 	    }
 
 	  slp_tree child = children[0];
