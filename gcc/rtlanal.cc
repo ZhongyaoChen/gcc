@@ -1230,17 +1230,17 @@ reg_set_between_p (const_rtx reg, const rtx_insn *from_insn,
   return false;
 }
 
-/* Return true if REG is set or clobbered inside INSN.  */
+/* Return true if REG is modified by an implicit side effect of INSN.  */
 
-bool
-reg_set_p (const_rtx reg, const_rtx insn)
+static bool
+implicit_reg_set_p (const_rtx reg, const_rtx insn)
 {
   /* After delay slot handling, call and branch insns might be in a
      sequence.  Check all the elements there.  */
   if (INSN_P (insn) && GET_CODE (PATTERN (insn)) == SEQUENCE)
     {
       for (int i = 0; i < XVECLEN (PATTERN (insn), 0); ++i)
-	if (reg_set_p (reg, XVECEXP (PATTERN (insn), 0, i)))
+	if (implicit_reg_set_p (reg, XVECEXP (PATTERN (insn), 0, i)))
 	  return true;
 
       return false;
@@ -1277,7 +1277,179 @@ reg_set_p (const_rtx reg, const_rtx insn)
 	}
     }
 
+  return false;
+}
+
+/* Return true if REG is set or clobbered inside INSN.  */
+
+bool
+reg_set_p (const_rtx reg, const_rtx insn)
+{
+  /* After delay slot handling, call and branch insns might be in a
+     sequence.  Check all the elements there.  */
+  if (INSN_P (insn) && GET_CODE (PATTERN (insn)) == SEQUENCE)
+    {
+      for (int i = 0; i < XVECLEN (PATTERN (insn), 0); ++i)
+	if (reg_set_p (reg, XVECEXP (PATTERN (insn), 0, i)))
+	  return true;
+
+      return false;
+    }
+
+  if (implicit_reg_set_p (reg, insn))
+    return true;
+
   return set_of (reg, insn) != NULL_RTX;
+}
+
+/* Return true if X is a simple non-paradoxical SUBREG of a REG.  */
+
+static bool
+simple_reg_subreg_p (const_rtx x)
+{
+  return (SUBREG_P (x)
+	  && REG_P (SUBREG_REG (x))
+	  && !paradoxical_subreg_p (x));
+}
+
+/* Return true if storing to DEST changes the value of SUBREG_REF, where both
+   are simple subregs of the same register with a known common containing size.
+
+   A subreg store can clobber the whole REGMODE_NATURAL_SIZE chunk that
+   contains it, even when the stored mode itself is smaller.  */
+
+static bool
+subreg_write_clobbers_ref_p (const_rtx subreg_ref, const_rtx dest)
+{
+  poly_uint64 chunk_size = REGMODE_NATURAL_SIZE (GET_MODE (SUBREG_REG (dest)));
+  poly_uint64 ref_chunk_size = REGMODE_NATURAL_SIZE (GET_MODE (SUBREG_REG (subreg_ref)));
+  if (maybe_gt (ref_chunk_size, chunk_size))
+    chunk_size = ref_chunk_size;
+  poly_uint64 container_size = GET_MODE_SIZE (GET_MODE (SUBREG_REG (dest)));
+  HOST_WIDE_INT num_chunks;
+  if (!constant_multiple_p (container_size, chunk_size, &num_chunks))
+    return true;
+
+  poly_uint64 ref_start = SUBREG_BYTE (subreg_ref);
+  poly_uint64 ref_size = GET_MODE_SIZE (GET_MODE (subreg_ref));
+  poly_uint64 dest_start = SUBREG_BYTE (dest);
+  poly_uint64 dest_size = GET_MODE_SIZE (GET_MODE (dest));
+
+  for (HOST_WIDE_INT i = 0; i < num_chunks; ++i)
+    {
+      poly_uint64 chunk_start = i * chunk_size;
+      if (ranges_maybe_overlap_p (chunk_start, chunk_size,
+				  dest_start, dest_size)
+	  && ranges_maybe_overlap_p (chunk_start, chunk_size,
+				     ref_start, ref_size))
+	return true;
+    }
+  return false;
+}
+
+/* Return true if DEST modifies SUBREG_REF.  */
+
+static bool
+subreg_modified_by_dest_p (const_rtx subreg_ref, const_rtx dest)
+{
+  if (!dest)
+    return false;
+
+  switch (GET_CODE (dest))
+    {
+    case SUBREG:
+      if (simple_reg_subreg_p (subreg_ref)
+	  && simple_reg_subreg_p (dest)
+	  && REGNO (SUBREG_REG (subreg_ref)) == REGNO (SUBREG_REG (dest))
+	  && known_eq (GET_MODE_SIZE (GET_MODE (SUBREG_REG (subreg_ref))),
+		       GET_MODE_SIZE (GET_MODE (SUBREG_REG (dest)))))
+	return subreg_write_clobbers_ref_p (subreg_ref, dest);
+      return reg_overlap_mentioned_p (subreg_ref, dest);
+
+    case STRICT_LOW_PART:
+    case ZERO_EXTRACT:
+    case SIGN_EXTRACT:
+      return subreg_modified_by_dest_p (subreg_ref, XEXP (dest, 0));
+
+    case REG:
+    case SCRATCH:
+    case PC:
+      return reg_overlap_mentioned_p (subreg_ref, dest);
+
+    case PARALLEL:
+      for (int i = XVECLEN (dest, 0) - 1; i >= 0; --i)
+	if (XEXP (XVECEXP (dest, 0, i), 0)
+	    && subreg_modified_by_dest_p (subreg_ref,
+					  XEXP (XVECEXP (dest, 0, i), 0)))
+	  return true;
+      return false;
+
+    default:
+      return false;
+    }
+}
+
+/* Return true if PAT modifies SUBREG_REF.  */
+
+static bool
+subreg_modified_by_pattern_p (const_rtx subreg_ref, const_rtx pat)
+{
+  if (GET_CODE (pat) == COND_EXEC)
+    pat = COND_EXEC_CODE (pat);
+
+  switch (GET_CODE (pat))
+    {
+    case SET:
+    case CLOBBER:
+      return subreg_modified_by_dest_p (subreg_ref, SET_DEST (pat));
+
+    case PARALLEL:
+      for (int i = XVECLEN (pat, 0) - 1; i >= 0; --i)
+	if (subreg_modified_by_pattern_p (subreg_ref, XVECEXP (pat, 0, i)))
+	  return true;
+      return false;
+
+    case SEQUENCE:
+      for (int i = XVECLEN (pat, 0) - 1; i >= 0; --i)
+	if (subreg_modified_by_pattern_p (subreg_ref,
+					  PATTERN (XVECEXP (pat, 0, i))))
+	  return true;
+      return false;
+
+    default:
+      return false;
+    }
+}
+
+/* Return true if X, a simple non-paradoxical SUBREG of a REG, is modified in
+   INSN.  */
+
+static bool
+simple_reg_subreg_modified_in_p (const_rtx x, const_rtx insn)
+{
+  gcc_checking_assert (simple_reg_subreg_p (x));
+
+  if (implicit_reg_set_p (SUBREG_REG (x), insn))
+    return true;
+
+  return subreg_modified_by_pattern_p (x,
+				       INSN_P (insn) ? PATTERN (insn) : insn);
+}
+
+/* Return true if X, a simple non-paradoxical SUBREG of a REG, is modified
+   between START and END.  */
+
+static bool
+simple_reg_subreg_modified_between_p (const_rtx x, const rtx_insn *start,
+				      const rtx_insn *end)
+{
+  for (const rtx_insn *insn = NEXT_INSN (start);
+       insn != end;
+       insn = NEXT_INSN (insn))
+    if (simple_reg_subreg_modified_in_p (x, insn))
+      return true;
+
+  return false;
 }
 
 /* Similar to reg_set_between_p, but check all registers in X.  Return false
@@ -1318,6 +1490,11 @@ modified_between_p (const_rtx x, const rtx_insn *start, const rtx_insn *end)
 
     case REG:
       return reg_set_between_p (x, start, end);
+
+    case SUBREG:
+      if (simple_reg_subreg_p (x))
+	return simple_reg_subreg_modified_between_p (x, start, end);
+      break;
 
     default:
       break;
@@ -1371,6 +1548,11 @@ modified_in_p (const_rtx x, const_rtx insn)
 
     case REG:
       return reg_set_p (x, insn);
+
+    case SUBREG:
+      if (simple_reg_subreg_p (x))
+	return simple_reg_subreg_modified_in_p (x, insn);
+      break;
 
     default:
       break;
