@@ -1230,17 +1230,17 @@ reg_set_between_p (const_rtx reg, const rtx_insn *from_insn,
   return false;
 }
 
-/* Return true if REG is set or clobbered inside INSN.  */
+/* Return true if REG is modified by an implicit side effect of INSN.  */
 
-bool
-reg_set_p (const_rtx reg, const_rtx insn)
+static bool
+implicit_reg_set_p (const_rtx reg, const_rtx insn)
 {
   /* After delay slot handling, call and branch insns might be in a
      sequence.  Check all the elements there.  */
   if (INSN_P (insn) && GET_CODE (PATTERN (insn)) == SEQUENCE)
     {
       for (int i = 0; i < XVECLEN (PATTERN (insn), 0); ++i)
-	if (reg_set_p (reg, XVECEXP (PATTERN (insn), 0, i)))
+	if (implicit_reg_set_p (reg, XVECEXP (PATTERN (insn), 0, i)))
 	  return true;
 
       return false;
@@ -1277,7 +1277,175 @@ reg_set_p (const_rtx reg, const_rtx insn)
 	}
     }
 
+  return false;
+}
+
+/* Return true if REG is set or clobbered inside INSN.  */
+
+bool
+reg_set_p (const_rtx reg, const_rtx insn)
+{
+  /* After delay slot handling, call and branch insns might be in a
+     sequence.  Check all the elements there.  */
+  if (INSN_P (insn) && GET_CODE (PATTERN (insn)) == SEQUENCE)
+    {
+      for (int i = 0; i < XVECLEN (PATTERN (insn), 0); ++i)
+	if (reg_set_p (reg, XVECEXP (PATTERN (insn), 0, i)))
+	  return true;
+
+      return false;
+    }
+
+  if (implicit_reg_set_p (reg, insn))
+    return true;
+
   return set_of (reg, insn) != NULL_RTX;
+}
+
+/* Return true if storing to DEST changes the value of SUBREG_REF, where both
+   are simple subregs of the same register with a known common containing size.
+
+   A subreg store can clobber the whole REGMODE_NATURAL_SIZE chunk that
+   contains it, even when the stored mode itself is smaller.  */
+
+static bool
+subreg_write_clobbers_ref_p (const_rtx subreg_ref, const_rtx dest)
+{
+  poly_uint64 chunk_size = REGMODE_NATURAL_SIZE (GET_MODE (SUBREG_REG (dest)));
+  poly_uint64 ref_chunk_size
+    = REGMODE_NATURAL_SIZE (GET_MODE (SUBREG_REG (subreg_ref)));
+  if (maybe_gt (ref_chunk_size, chunk_size))
+    chunk_size = ref_chunk_size;
+  poly_uint64 container_size = GET_MODE_SIZE (GET_MODE (SUBREG_REG (dest)));
+  HOST_WIDE_INT num_chunks;
+  if (!constant_multiple_p (container_size, chunk_size, &num_chunks))
+    return true;
+
+  poly_uint64 ref_start = SUBREG_BYTE (subreg_ref);
+  poly_uint64 ref_size = GET_MODE_SIZE (GET_MODE (subreg_ref));
+  poly_uint64 dest_start = SUBREG_BYTE (dest);
+  poly_uint64 dest_size = GET_MODE_SIZE (GET_MODE (dest));
+
+  for (HOST_WIDE_INT i = 0; i < num_chunks; ++i)
+    {
+      poly_uint64 chunk_start = i * chunk_size;
+      if (ranges_maybe_overlap_p (chunk_start, chunk_size,
+                                 dest_start, dest_size)
+         && ranges_maybe_overlap_p (chunk_start, chunk_size,
+                                    ref_start, ref_size))
+       return true;
+    }
+  return false;
+}
+
+/* Return true if DEST modifies SUBREG_REF.  */
+
+static bool
+subreg_modified_by_dest_p (const_rtx subreg_ref, const_rtx dest)
+{
+  if (!dest)
+    return false;
+
+  switch (GET_CODE (dest))
+    {
+    case SUBREG:
+      if (REG_P (SUBREG_REG (dest))
+         && REGNO (SUBREG_REG (subreg_ref)) == REGNO (SUBREG_REG (dest)))
+       return subreg_write_clobbers_ref_p (subreg_ref, dest);
+      return reg_overlap_mentioned_p (subreg_ref, dest);
+
+    case STRICT_LOW_PART:
+    case ZERO_EXTRACT:
+    case SIGN_EXTRACT:
+      return subreg_modified_by_dest_p (subreg_ref, XEXP (dest, 0));
+
+    case REG:
+    case SCRATCH:
+    case PC:
+      return reg_overlap_mentioned_p (subreg_ref, dest);
+
+    case PARALLEL:
+      for (int i = XVECLEN (dest, 0) - 1; i >= 0; --i)
+       if (XEXP (XVECEXP (dest, 0, i), 0)
+           && subreg_modified_by_dest_p (subreg_ref,
+                                         XEXP (XVECEXP (dest, 0, i), 0)))
+         return true;
+      return false;
+
+    default:
+      return false;
+    }
+}
+
+/* Return true if X, a simple partial SUBREG of a REG, is modified in INSN.  */
+
+static bool
+subreg_modified_in_p (const_rtx x, const_rtx insn)
+{
+  gcc_checking_assert (SUBREG_P (x) && REG_P (SUBREG_REG (x)));
+
+  if (implicit_reg_set_p (SUBREG_REG (x), insn))
+    return true;
+
+  vec_rtx_properties properties;
+  properties.ignore_srcs = true;
+  if (INSN_P (insn))
+    properties.try_to_add_insn (as_a <const rtx_insn *> (insn), false);
+  else
+    properties.try_to_add_pattern (insn);
+  bool possible_conflict = false;
+  for (auto ref : properties.refs ())
+    if (ref.is_reg () && ref.is_write ()
+       && ref.regno == REGNO (SUBREG_REG (x)))
+      {
+       if (!ref.in_subreg ())
+         return true;
+       possible_conflict = true;
+      }
+
+  if (!possible_conflict)
+    return false;
+
+  subrtx_iterator::array_type array;
+  FOR_EACH_SUBRTX (iter, array, INSN_P (insn) ? PATTERN (insn) : insn, NONCONST)
+    {
+      const_rtx sub = *iter;
+      if (GET_CODE (sub) == SET || GET_CODE (sub) == CLOBBER)
+       {
+         if (subreg_modified_by_dest_p (x, XEXP (sub, 0)))
+           return true;
+       }
+    }
+
+  if (CALL_P (insn))
+    {
+      for (rtx link = CALL_INSN_FUNCTION_USAGE (insn); link;
+          link = XEXP (link, 1))
+       {
+         rtx sub = XEXP (link, 0);
+         if (GET_CODE (sub) == CLOBBER)
+           if (subreg_modified_by_dest_p (x, XEXP (sub, 0)))
+             return true;
+       }
+    }
+
+  return false;
+}
+
+/* Return true if X, a simple partial SUBREG of a REG, is modified
+   between START and END.  */
+
+static bool
+subreg_modified_between_p (const_rtx x, const rtx_insn *start,
+                          const rtx_insn *end)
+{
+  for (const rtx_insn *insn = NEXT_INSN (start);
+       insn != end;
+       insn = NEXT_INSN (insn))
+    if (subreg_modified_in_p (x, insn))
+      return true;
+
+  return false;
 }
 
 /* Similar to reg_set_between_p, but check all registers in X.  Return false
@@ -1318,6 +1486,11 @@ modified_between_p (const_rtx x, const rtx_insn *start, const rtx_insn *end)
 
     case REG:
       return reg_set_between_p (x, start, end);
+
+    case SUBREG:
+      if (REG_P (SUBREG_REG (x)) && read_modify_subreg_p (x))
+	return subreg_modified_between_p (x, start, end);
+      break;
 
     default:
       break;
@@ -1371,6 +1544,11 @@ modified_in_p (const_rtx x, const_rtx insn)
 
     case REG:
       return reg_set_p (x, insn);
+
+    case SUBREG:
+      if (REG_P (SUBREG_REG (x)) && read_modify_subreg_p (x))
+	return subreg_modified_in_p (x, insn);
+      break;
 
     default:
       break;
@@ -2180,7 +2358,7 @@ rtx_properties::try_to_add_dest (const_rtx x, unsigned int flags)
    This routine accepts all rtxes that can legitimately appear in a SET_SRC.  */
 
 void
-rtx_properties::try_to_add_src (const_rtx x, unsigned int flags)
+rtx_properties::try_to_add_src_1 (const_rtx x, unsigned int flags)
 {
   unsigned int base_flags = flags & rtx_obj_flags::STICKY_FLAGS;
   subrtx_iterator::array_type array;

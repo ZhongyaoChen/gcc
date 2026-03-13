@@ -129,6 +129,7 @@ public:
 
   void try_to_add_reg (const_rtx x, unsigned int flags = 0);
   void try_to_add_dest (const_rtx x, unsigned int flags = 0);
+  void try_to_add_src_1 (const_rtx x, unsigned int flags = 0);
   void try_to_add_src (const_rtx x, unsigned int flags = 0);
   void try_to_add_pattern (const_rtx pat);
   void try_to_add_note (const_rtx x);
@@ -160,8 +161,11 @@ public:
      volatile_refs_p.  */
   unsigned int has_volatile_refs : 1;
 
+  /* True if we should ignore sources and only record destinations.  */
+  unsigned int ignore_srcs : 1;
+
   /* For future expansion.  */
-  unsigned int spare : 28;
+  unsigned int spare : 27;
 };
 
 inline rtx_properties::rtx_properties ()
@@ -172,6 +176,7 @@ inline rtx_properties::rtx_properties ()
     has_call (false),
     has_pre_post_modify (false),
     has_volatile_refs (false),
+    ignore_srcs (false),
     spare (0)
 {
 }
@@ -183,6 +188,16 @@ inline void
 rtx_properties::try_to_add_note (const_rtx x)
 {
   try_to_add_src (x, rtx_obj_flags::IN_NOTE);
+}
+
+/* Wrapper around try_to_add_src_1 that avoids the walk if IGNORE_SRCS
+   is true.  */
+
+inline void
+rtx_properties::try_to_add_src (const_rtx x, unsigned int flags)
+{
+  if (!ignore_srcs)
+    try_to_add_src_1 (x, flags);
 }
 
 /* Return true if the rtx has side effects, in the sense of
