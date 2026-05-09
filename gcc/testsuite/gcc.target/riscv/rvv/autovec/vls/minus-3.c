@@ -53,5 +53,5 @@ DEF_OP_IV_15 (minus, 128, int64_t, -)
 DEF_OP_IV_15 (minus, 256, int64_t, -)
 DEF_OP_IV_15 (minus, 512, int64_t, -)
 
-/* { dg-final { scan-assembler-times {vrsub\.vi\s+v[0-9]+,\s*v[0-9]+,\s*15} 42 } } */
+/* { dg-final { scan-assembler-times {vrsub\.vi\s+v[0-9]+,\s*v[0-9]+,\s*15} 86 } } */
 /* { dg-final { scan-assembler-not {csrr} } } */

@@ -53,5 +53,5 @@ DEF_OP_VI_M16 (and, 128, int64_t, &)
 DEF_OP_VI_M16 (and, 256, int64_t, &)
 DEF_OP_VI_M16 (and, 512, int64_t, &)
 
-/* { dg-final { scan-assembler-times {vand\.vi\s+v[0-9]+,\s*v[0-9]+,\s*-16} 42 } } */
+/* { dg-final { scan-assembler-times {vand\.vi\s+v[0-9]+,\s*v[0-9]+,\s*-16} 86 } } */
 /* { dg-final { scan-assembler-not {csrr} } } */

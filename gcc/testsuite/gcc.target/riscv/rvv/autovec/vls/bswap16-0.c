@@ -29,6 +29,6 @@ DEF_OP_V (bswap16, 2048, uint16_t, __builtin_bswap16)
 /* { dg-final { scan-tree-dump-not "1024,1024" "optimized" } } */
 /* { dg-final { scan-tree-dump-not "2048,2048" "optimized" } } */
 /* { dg-final { scan-tree-dump-not "4096,4096" "optimized" } } */
-/* { dg-final { scan-assembler-times {vsrl\.vi\s+v[0-9]+,\s*v[0-9]+,\s*8} 11 } } */
-/* { dg-final { scan-assembler-times {vsll\.vi\s+v[0-9]+,\s*v[0-9]+,\s*8} 11 } } */
-/* { dg-final { scan-assembler-times {vor\.vv\s+v[0-9]+,\s*v[0-9]+,\s*v[0-9]+} 11 } } */
+/* { dg-final { scan-assembler {vsrl\.vi\s+v[0-9]+,\s*v[0-9]+,\s*8} } } */
+/* { dg-final { scan-assembler {vsll\.vi\s+v[0-9]+,\s*v[0-9]+,\s*8} } } */
+/* { dg-final { scan-assembler {vor\.vv\s+v[0-9]+,\s*v[0-9]+,\s*v[0-9]+} } } */

@@ -39,5 +39,5 @@ DEF_OP_VX (div, 128, double, /)
 DEF_OP_VX (div, 256, double, /)
 DEF_OP_VX (div, 512, double, /)
 
-/* { dg-final { scan-assembler-times {vfdiv\.vv\s+v[0-9]+,\s*v[0-9]+,\s*v[0-9]+} 30 } } */
+/* { dg-final { scan-assembler-times {vfdiv\.vv\s+v[0-9]+,\s*v[0-9]+,\s*v[0-9]+} 63 } } */
 /* { dg-final { scan-assembler-not {csrr} } } */

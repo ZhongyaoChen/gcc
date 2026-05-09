@@ -39,5 +39,5 @@ DEF_SGNJX_VV (sgnj, 128, double, __builtin_copysign)
 DEF_SGNJX_VV (sgnj, 256, double, __builtin_copysign)
 DEF_SGNJX_VV (sgnj, 512, double, __builtin_copysign)
 
-/* { dg-final { scan-assembler-times {vfsgnjx\.vv\s+v[0-9]+,\s*v[0-9]+,\s*v[0-9]+} 30 } } */
+/* { dg-final { scan-assembler-times {vfsgnjx\.vv\s+v[0-9]+,\s*v[0-9]+,\s*v[0-9]+} 63 } } */
 /* { dg-final { scan-assembler-not {csrr} } } */

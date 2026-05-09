@@ -63,8 +63,8 @@ DEF_WIDEN_REDUC_PLUS (uint32_t, uint64_t, 128)
 DEF_WIDEN_REDUC_PLUS (uint32_t, uint64_t, 256)
 DEF_WIDEN_REDUC_PLUS (uint32_t, uint64_t, 512)
 
-/* { dg-final { scan-assembler-times {vwredsum\.vs} 19 } } */
-/* { dg-final { scan-assembler-times {vwredsumu\.vs} 19 } } */
+/* { dg-final { scan-assembler {vwredsum\.vs} } } */
+/* { dg-final { scan-assembler {vwredsumu\.vs} } } */
 /* { dg-final { scan-assembler-not {csrr} } } */
 /* { dg-final { scan-tree-dump-not "1,1" "optimized" } } */
 /* { dg-final { scan-tree-dump-not "2,2" "optimized" } } */

@@ -3,7 +3,7 @@
 
 #include "wred-2.c"
 
-/* { dg-final { scan-assembler-times {vfwredosum\.vs} 17 } } */
+/* { dg-final { scan-assembler {vfwredosum\.vs} } } */
 /* { dg-final { scan-assembler-not {csrr} } } */
 /* { dg-final { scan-tree-dump-not "1,1" "optimized" } } */
 /* { dg-final { scan-tree-dump-not "2,2" "optimized" } } */

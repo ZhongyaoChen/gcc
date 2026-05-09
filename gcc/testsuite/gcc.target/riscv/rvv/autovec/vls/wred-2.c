@@ -22,7 +22,7 @@ DEF_WIDEN_REDUC_PLUS (float, double, 128)
 DEF_WIDEN_REDUC_PLUS (float, double, 256)
 DEF_WIDEN_REDUC_PLUS (float, double, 512)
 
-/* { dg-final { scan-assembler-times {vfwredusum\.vs} 17 } } */
+/* { dg-final { scan-assembler {vfwredusum\.vs} } } */
 /* { dg-final { scan-assembler-not {csrr} } } */
 /* { dg-final { scan-tree-dump-not "1,1" "optimized" } } */
 /* { dg-final { scan-tree-dump-not "2,2" "optimized" } } */

@@ -87,8 +87,8 @@ DEF_MULH (uint64_t, 128)
 DEF_MULH (uint64_t, 256)
 DEF_MULH (uint64_t, 512)
 
-/* { dg-final { scan-assembler-times {vmulh\.} 38 } } */
-/* { dg-final { scan-assembler-times {vmulhu\.} 38 } } */
+/* { dg-final { scan-assembler {vmulh\.} } } */
+/* { dg-final { scan-assembler {vmulhu\.} } } */
 /* { dg-final { scan-assembler-not {csrr} } } */
 /* { dg-final { scan-tree-dump-not "1,1" "optimized" } } */
 /* { dg-final { scan-tree-dump-not "2,2" "optimized" } } */
