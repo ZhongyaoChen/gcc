@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O3 -march=rv64gcv -mabi=lp64d -fdump-tree-optimized" } */
+/* { dg-options "-O3 -march=rv64gcv -mabi=lp64d -fdump-tree-optimized -fno-vect-cost-model" } */
 
 struct {
   signed b;

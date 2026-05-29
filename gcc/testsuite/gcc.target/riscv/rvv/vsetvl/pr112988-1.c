@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-mrvv-vector-bits=scalable -march=rv64gcv -mabi=lp64d -O3" } */
+/* { dg-options "-mrvv-vector-bits=scalable -march=rv64gcv -mabi=lp64d -O3 -fno-vect-cost-model" } */
 
 int a = 0;
 int p, q, r, x = 230;

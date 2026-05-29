@@ -1,7 +1,7 @@
 /* { dg-do compile } */
-/* { dg-options "-march=rv64gcv_zvl512b -mabi=lp64d -O3 -mrvv-vector-bits=zvl -fno-schedule-insns -fno-schedule-insns2" } */
+/* { dg-options "-march=rv64gcv_zvl512b -mabi=lp64d -O3 -mrvv-vector-bits=zvl -fno-schedule-insns -fno-schedule-insns2 -fno-vect-cost-model" } */
 /* { dg-final { check-function-bodies "**" "" } } */
-/* { dg-skip-if "" { *-*-* } { "-mrvv-max-lmul=dynamic" } } */
+/* { dg-skip-if "" { *-*-* } { "-mrvv-max-lmul=dynamic" "-mrvv-max-lmul=m2" "-mrvv-max-lmul=m4" "-mrvv-max-lmul=m8" } } */
 #define MAX     10
 
 struct s { struct s *n; } *p;

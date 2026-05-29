@@ -49,6 +49,10 @@ along with GCC; see the file COPYING3.  If not see
 
 namespace riscv_vector {
 
+/* Default scalar-over-vector unit ratio for vector cost scaling.  This may
+   later come from the CPU model, tune info, or a user-visible interface.  */
+static constexpr unsigned int scalar_over_vector_unit_ratio = 2;
+
 /* Dynamic LMUL philosophy - Local linear-scan SSA live range based analysis
    determine LMUL
 
@@ -1616,6 +1620,19 @@ costs::add_stmt_cost (int count, vect_cost_for_stmt kind,
   if (vectype)
     stmt_cost = adjust_stmt_cost (kind, loop_vinfo, stmt_info, node, vectype,
 				  stmt_cost);
+
+  /* Scale integer vector body costs by a scalar/vector ratio to better match
+     actual hardware throughput, avoid making vectorization too cheap.  */
+  if (!costing_for_scalar ()
+      && loop_vinfo
+      && where == vect_body
+      && kind == vector_stmt
+      && !is_reduction (stmt_info, node)
+      && !(stmt_info && STMT_VINFO_GATHER_SCATTER_P (stmt_info))
+      && !(node && mat_gather_scatter_p (SLP_TREE_MEMORY_ACCESS_TYPE (node)))
+      && vectype
+      && VECTOR_INTEGER_TYPE_P (vectype))
+    stmt_cost *= scalar_over_vector_unit_ratio;
 
   return record_stmt_cost (stmt_info, where, count * stmt_cost);
 }

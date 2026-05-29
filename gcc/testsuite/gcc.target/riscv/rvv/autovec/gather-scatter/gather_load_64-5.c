@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-additional-options "-march=rv64gcv_zvfh -mabi=lp64d  -fdump-tree-vect-details" } */
+/* { dg-additional-options "-march=rv64gcv_zvfh -mabi=lp64d -fdump-tree-vect-details -fno-vect-cost-model" } */
 
 #include <stdint-gcc.h>
 
