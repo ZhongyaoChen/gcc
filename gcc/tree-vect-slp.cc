@@ -2988,6 +2988,14 @@ out:
       stmt_can_swap = NULL;
       if (can_swap)
 	{
+	  gassign *first_op0
+	    = dyn_cast <gassign *> (oprnds_info[0]->def_stmts[0]->stmt);
+	  gassign *first_op1
+	    = dyn_cast <gassign *> (oprnds_info[1]->def_stmts[0]->stmt);
+	  tree_code first_op0_code
+	    = first_op0 ? gimple_assign_rhs_code (first_op0) : ERROR_MARK;
+	  tree_code first_op1_code
+	    = first_op1 ? gimple_assign_rhs_code (first_op1) : ERROR_MARK;
 	  stmt_can_swap = XALLOCAVEC (bool, group_size);
 	  for (j = 0; j < group_size; ++j)
 	    {
@@ -3008,6 +3016,31 @@ out:
 		  stmt_can_swap[j] = ((commutative_binary_fn_p (fn)
 				       || commutative_ternary_fn_p (fn))
 				      && first_commutative_argument (fn) == 0);
+		}
+
+	      if (j != 0
+		  && stmt_can_swap[j]
+		  && first_op0
+		  && first_op1
+		  && first_op0_code != first_op1_code)
+		{
+		  gassign *lane_op0
+		    = oprnds_info[0]->def_stmts[j]
+		      ? dyn_cast <gassign *>
+			  (oprnds_info[0]->def_stmts[j]->stmt)
+		      : nullptr;
+		  gassign *lane_op1
+		    = oprnds_info[1]->def_stmts[j]
+		      ? dyn_cast <gassign *>
+			  (oprnds_info[1]->def_stmts[j]->stmt)
+		      : nullptr;
+		  /* Check column alignment by tree_code.  */
+		  if (lane_op0
+		      && lane_op1
+		      && gimple_assign_rhs_code (lane_op0) == first_op0_code
+		      && gimple_assign_rhs_code (lane_op1) == first_op1_code)
+		    /* Swap would create a mixed child shape.  */
+		    stmt_can_swap[j] = false;
 		}
 
 	      if (j != 0 && !stmt_can_swap[j])
