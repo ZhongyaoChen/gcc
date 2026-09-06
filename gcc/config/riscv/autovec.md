@@ -410,6 +410,17 @@
   }
 )
 
+;; Initialize vector from two subvectors.
+(define_expand "vec_init<mode><vls_half>"
+  [(match_operand:VLS_HAS_HALF 0 "register_operand")
+   (match_operand 1 "")]
+  "TARGET_VECTOR"
+  {
+    riscv_vector::expand_vec_init_subvector (operands[0], operands[1]);
+    DONE;
+  }
+)
+
 ;; Provide a vec_init for mask registers by initializing
 ;; a QImode vector and comparing it against 0.
 ;; As we need to ignore all but the lowest bit apply an AND mask

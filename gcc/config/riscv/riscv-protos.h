@@ -753,6 +753,8 @@ void expand_broadcast (machine_mode, rtx *, rtx = 0);
 void expand_set_first (machine_mode, rtx *, rtx = 0);
 void expand_set_first_tu (machine_mode, rtx *, rtx = 0);
 void expand_vec_init (rtx, rtx);
+void expand_vec_init_subvector (rtx, rtx);
+void expand_vec_concat (rtx, rtx, rtx);
 void expand_vec_perm (rtx, rtx, rtx, rtx);
 void expand_select_vl (rtx *);
 void expand_load_store (rtx *, bool);

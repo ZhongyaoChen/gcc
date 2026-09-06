@@ -2977,6 +2977,78 @@ expand_vec_init (rtx target, rtx vals)
     expand_vector_init_insert_elems (target, v, nelts);
 }
 
+/* Concatenate two subvectors OP0 and OP1 (mode VLS_HALF)
+   into TARGET (mode VLS_HAS_HALF).  */
+void
+expand_vec_concat (rtx target, rtx op0, rtx op1)
+{
+  machine_mode vmode = GET_MODE (target);
+  machine_mode vmode_half = GET_MODE (op0);
+  gcc_assert (GET_MODE (op1) == vmode_half);
+
+  if (!REG_P (target))
+    target = force_reg (vmode, target);
+  op0 = force_reg (vmode_half, op0);
+  op1 = force_reg (vmode_half, op1);
+
+  poly_uint64 mode_size = GET_MODE_SIZE (vmode);
+  poly_uint64 nat_size = riscv_regmode_natural_size (vmode);
+
+  /* Use a fresh pseudo to eliminate uninitialized dataflow warnings
+     and guarantee safety against any aliasing between target and op0/op1.  */
+  rtx tmp_target = gen_reg_rtx (vmode);
+  emit_clobber (tmp_target);
+
+  /* Case 1: When mode size is greater than natural register size (LMUL > 1),
+     the half-mode size is at least the natural size (one vector register).
+     Thus, taking subregs of the target for the lower and upper halves
+     is completely valid under REGMODE_NATURAL_SIZE rules.  */
+  if (known_gt (mode_size, nat_size))
+    {
+      poly_uint64 half_size = GET_MODE_SIZE (vmode_half);
+      rtx target_low = simplify_gen_subreg (vmode_half, tmp_target, vmode, 0);
+      rtx target_high
+	= simplify_gen_subreg (vmode_half, tmp_target, vmode, half_size);
+
+      emit_move_insn (target_low, op0);
+      emit_move_insn (target_high, op1);
+    }
+  else
+    {
+      /* Case 2: When mode size <= natural register size (LMUL <= 1),
+	 target and the subvectors fit within a single register.
+	 We put op0 in the lowpart of target, and slide op1 into the upper half.  */
+      emit_move_insn (gen_lowpart (vmode_half, tmp_target), op0);
+
+      poly_int64 nunits = GET_MODE_NUNITS (vmode);
+      int vlen = nunits.to_constant ();
+      rtx slide_amt = gen_int_mode (vlen / 2, Pmode);
+
+      /* Avoid dangerous paradoxical subreg which causes LRA to read
+	 out of bounds if spilled to stack.  */
+      rtx op1_vmode = gen_reg_rtx (vmode);
+      emit_clobber (op1_vmode);
+      emit_move_insn (gen_lowpart (vmode_half, op1_vmode), op1);
+
+      insn_code icode = code_for_pred_slide (UNSPEC_VSLIDEUP, vmode);
+      rtx ops[] = {tmp_target, tmp_target, op1_vmode, slide_amt};
+      emit_vlmax_insn (icode, SLIDEUP_OP_MERGE, ops);
+    }
+
+  emit_move_insn (target, tmp_target);
+}
+
+/* Subroutine of vec_init<mode><vls_half> to initialize TARGET from
+   subvectors in VALS.  */
+void
+expand_vec_init_subvector (rtx target, rtx vals)
+{
+  gcc_assert (XVECLEN (vals, 0) == 2);
+  rtx op0 = XVECEXP (vals, 0, 0);
+  rtx op1 = XVECEXP (vals, 0, 1);
+  emit_insn (gen_vec_concat (GET_MODE (target), target, op0, op1));
+}
+
 /* Get insn code for corresponding comparison.  */
 
 static insn_code
@@ -4057,38 +4129,38 @@ shuffle_even_odd_patterns (struct expand_vec_perm_d *d)
 
   /* When the element width is smaller than the greatest ELEN, we can use two
      vnsrl instructions, each extracting the even/odd elements of one source,
-     and a vslideup instruction to merge them into one vector.
-
-     Until we have a "widening" vector concat pattern (just like slideup here
-     but with the proper modes) we still need the natural-size check for
-     LMUL > 1 cases.  */
+     and a vector concat operation to merge them into one vector.  */
   unsigned int max_elen = TARGET_VECTOR_ELEN_64 ? 64 : 32;
-  if (GET_MODE_BITSIZE (GET_MODE_INNER (vmode)) * 2 <= max_elen
-      && known_le (GET_MODE_SIZE (vmode), riscv_regmode_natural_size (vmode)))
+  if (GET_MODE_BITSIZE (GET_MODE_INNER (vmode)) * 2 <= max_elen)
     {
       unsigned int elen = GET_MODE_BITSIZE (GET_MODE_INNER (vmode));
       unsigned int elen2x = elen * 2;
-      scalar_int_mode smode_elen2x = int_mode_for_size (elen2x, 0).require ();
-      scalar_int_mode smode = int_mode_for_size (elen, 0).require ();
-      machine_mode vmode_elen2x
-	= get_vector_mode (smode_elen2x, vlen / 2).require ();
-      machine_mode vmode_half = get_vector_mode (smode, vlen / 2).require ();
-      unsigned int shift_amt = even ? 0 : elen;
+      scalar_int_mode smode_elen2x;
+      scalar_int_mode smode;
+      machine_mode vmode_elen2x;
+      machine_mode vmode_half;
+      if (!int_mode_for_size (elen2x, 0).exists (&smode_elen2x)
+	  || !int_mode_for_size (elen, 0).exists (&smode)
+	  || !get_vector_mode (smode_elen2x, vlen / 2).exists (&vmode_elen2x)
+	  || !get_vector_mode (smode, vlen / 2).exists (&vmode_half))
+	return false;
+
       insn_code icode = code_for_pred_narrow_scalar (LSHIFTRT, vmode_elen2x);
-      /* TODO these lowpart subreg workarounds should go, this is actually a
-	 simple concatenation of two "half"-sized vectors.  */
-      rtx tmp = gen_reg_rtx (vmode);
+      if (icode == CODE_FOR_nothing)
+	return false;
+
+      unsigned int shift_amt = even ? 0 : elen;
+      rtx half0 = gen_reg_rtx (vmode_half);
+      rtx half1 = gen_reg_rtx (vmode_half);
       rtx ops_shift1[]
-	= {gen_lowpart (vmode_half, d->target),
-	   gen_lowpart (vmode_elen2x, d->op0), gen_int_mode (shift_amt, Pmode)};
+	= {half0, gen_lowpart (vmode_elen2x, d->op0),
+	   gen_int_mode (shift_amt, Pmode)};
       rtx ops_shift2[]
-	= {gen_lowpart (vmode_half, tmp), gen_lowpart (vmode_elen2x, d->op1),
+	= {half1, gen_lowpart (vmode_elen2x, d->op1),
 	   gen_int_mode (shift_amt, Pmode)};
       emit_vlmax_insn (icode, BINARY_OP, ops_shift1);
       emit_vlmax_insn (icode, BINARY_OP, ops_shift2);
-      rtx ops[] = {d->target, d->target, tmp, gen_int_mode (vlen / 2, Pmode)};
-      icode = code_for_pred_slide (UNSPEC_VSLIDEUP, vmode);
-      emit_vlmax_insn (icode, SLIDEUP_OP_MERGE, ops);
+      expand_vec_concat (d->target, half0, half1);
       return true;
     }
 

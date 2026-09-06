@@ -8495,6 +8495,17 @@
   [(set_attr "type" "vfslide<ud>")
    (set_attr "mode" "<MODE>")])
 
+;; Concatenate two half-width vectors into a full vector.
+(define_expand "@vec_concat<mode>"
+  [(match_operand:VLS_HAS_HALF 0 "register_operand")
+   (match_operand:<VLS_HALF> 1 "register_operand")
+   (match_operand:<VLS_HALF> 2 "register_operand")]
+  "TARGET_VECTOR"
+  {
+    riscv_vector::expand_vec_concat (operands[0], operands[1], operands[2]);
+    DONE;
+  })
+
 ;; vrgather
 (define_insn "@pred_gather<mode>"
   [(set (match_operand:V_VLS 0 "register_operand"              "=&vr,  &vr")
