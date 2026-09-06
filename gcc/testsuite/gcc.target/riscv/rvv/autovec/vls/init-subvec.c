@@ -17,44 +17,52 @@ typedef float v8sf __attribute__ ((vector_size (32)));
 v16qi
 concat_v8qi (v8qi a, v8qi b)
 {
-  return (v16qi) {
-    a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
-    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
-  };
+  return __builtin_shufflevector (a, b, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
 }
 
 v4si
 concat_v2si (v2si a, v2si b)
 {
-  return (v4si) {a[0], a[1], b[0], b[1]};
+  return __builtin_shufflevector (a, b, 0, 1, 2, 3);
 }
 
 v4sf
 concat_v2sf (v2sf a, v2sf b)
 {
-  return (v4sf) {a[0], a[1], b[0], b[1]};
+  return __builtin_shufflevector (a, b, 0, 1, 2, 3);
 }
 
 /* LMUL > 1 cases */
 v8si
 concat_v4si (v4si a, v4si b)
 {
-  return (v8si) {a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]};
+  return __builtin_shufflevector (a, b, 0, 1, 2, 3, 4, 5, 6, 7);
 }
 
 v16hi
 concat_v8hi (v8hi a, v8hi b)
 {
-  return (v16hi) {
-    a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
-    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
-  };
+  return __builtin_shufflevector (a, b, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
 }
 
 v8sf
 concat_v4sf (v4sf a, v4sf b)
 {
-  return (v8sf) {a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]};
+  return __builtin_shufflevector (a, b, 0, 1, 2, 3, 4, 5, 6, 7);
+}
+
+/* Even/odd deinterleave pattern testing (uses expand_vec_concat in shuffle_even_odd_patterns) */
+v4si
+even_v4si (v4si a, v4si b)
+{
+  return __builtin_shufflevector (a, b, 0, 2, 4, 6);
+}
+
+v8si
+even_v8si (v8si a, v8si b)
+{
+  return __builtin_shufflevector (a, b, 0, 2, 4, 6, 8, 10, 12, 14);
 }
 
 /* { dg-final { scan-assembler "vslideup" } } */
+/* { dg-final { scan-assembler "vnsrl" } } */
