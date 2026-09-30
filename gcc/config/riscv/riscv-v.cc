@@ -4056,11 +4056,11 @@ shuffle_even_odd_patterns (struct expand_vec_perm_d *d)
 
   /* When the element width is smaller than the greatest ELEN, we can use two
      vnsrl instructions, each extracting the even/odd elements of one source,
-     and a vslideup instruction to merge them into one vector.
+     and vec_concat to merge them into one vector.
 
-     Until we have a "widening" vector concat pattern (just like slideup here
-     but with the proper modes) we still need the natural-size check for
-     LMUL > 1 cases.  */
+     We still need the natural-size check for LMUL > 1 cases because
+     vec_concat relies on lowpart-subreg moves, which would force memory
+     spills for multi-register VLS vectors.  */
   unsigned int max_elen = TARGET_VECTOR_ELEN_64 ? 64 : 32;
   if (GET_MODE_BITSIZE (GET_MODE_INNER (vmode)) * 2 <= max_elen
       && known_le (GET_MODE_SIZE (vmode), riscv_regmode_natural_size (vmode)))
@@ -4074,20 +4074,20 @@ shuffle_even_odd_patterns (struct expand_vec_perm_d *d)
       machine_mode vmode_half = get_vector_mode (smode, vlen / 2).require ();
       unsigned int shift_amt = even ? 0 : elen;
       insn_code icode = code_for_pred_narrow_scalar (LSHIFTRT, vmode_elen2x);
-      /* TODO these lowpart subreg workarounds should go, this is actually a
-	 simple concatenation of two "half"-sized vectors.  */
-      rtx tmp = gen_reg_rtx (vmode);
+      rtx lo = gen_reg_rtx (vmode_half);
+      rtx hi = gen_reg_rtx (vmode_half);
       rtx ops_shift1[]
-	= {gen_lowpart (vmode_half, d->target),
-	   gen_lowpart (vmode_elen2x, d->op0), gen_int_mode (shift_amt, Pmode)};
+	= {lo, gen_lowpart (vmode_elen2x, d->op0),
+	   gen_int_mode (shift_amt, Pmode)};
       rtx ops_shift2[]
-	= {gen_lowpart (vmode_half, tmp), gen_lowpart (vmode_elen2x, d->op1),
+	= {hi, gen_lowpart (vmode_elen2x, d->op1),
 	   gen_int_mode (shift_amt, Pmode)};
       emit_vlmax_insn (icode, BINARY_OP, ops_shift1);
       emit_vlmax_insn (icode, BINARY_OP, ops_shift2);
-      rtx ops[] = {d->target, d->target, tmp, gen_int_mode (vlen / 2, Pmode)};
-      icode = code_for_pred_slide (UNSPEC_VSLIDEUP, vmode);
-      emit_vlmax_insn (icode, SLIDEUP_OP_MERGE, ops);
+
+      machine_mode imode = related_int_vector_mode (vmode).require ();
+      emit_insn (gen_vec_concat (imode, gen_lowpart (imode, d->target),
+				 lo, hi));
       return true;
     }
 
