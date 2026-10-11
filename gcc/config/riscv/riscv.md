@@ -4954,7 +4954,7 @@
 ; expression equals ROL1 (A) ^ 1.
 (define_split
   [(set (match_operand:X 0 "register_operand")
-     (ior:X
+     (any_or_plus:X
        (ashift:X (match_operand:X 1 "register_operand")
 		  (const_int 1))
 		(ge:X (match_dup 1) (const_int 0))))]

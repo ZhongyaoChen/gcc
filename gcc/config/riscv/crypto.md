@@ -107,12 +107,12 @@
 ;; This is slightly more complex than the other pack patterns
 ;; that fully expose the RTL as it needs to self-adjust to
 ;; rv32 and rv64.  But it's not that hard.
-(define_insn "riscv_xpack_<X:mode>_<HX:mode>_2"
+(define_insn "<aop_pref_ior>riscv_xpack_<X:mode>_<HX:mode>_2"
   [(set (match_operand:X 0 "register_operand" "=r")
-	(ior:X (ashift:X (match_operand:X 1 "register_operand" "r")
-			 (match_operand 2 "immediate_operand" "n"))
-	       (zero_extend:X
-		 (match_operand:HX 3 "register_operand" "r"))))]
+	(any_or_plus:X (ashift:X (match_operand:X 1 "register_operand" "r")
+				 (match_operand 2 "immediate_operand" "n"))
+		       (zero_extend:X
+			 (match_operand:HX 3 "register_operand" "r"))))]
   "TARGET_ZBKB && INTVAL (operands[2]) == BITS_PER_WORD / 2"
   "pack\t%0,%3,%1"
   [(set_attr "type" "crypto")])
@@ -141,10 +141,11 @@
 ;; to be the canonical form.  The other form doesn't seem to trigger.
 (define_insn "*riscv_packh_<mode>_3"
   [(set (match_operand:X 0 "register_operand" "=r")
-	(ior:X (and:X (ashift:X (match_operand:X 1 "register_operand" "r")
-				(const_int 8))
-		      (const_int 65280))
-	       (zero_extend:X (match_operand:QI 2 "register_operand" "r"))))]
+	(any_or_plus:X
+	  (and:X (ashift:X (match_operand:X 1 "register_operand" "r")
+			   (const_int 8))
+		 (const_int 65280))
+	  (zero_extend:X (match_operand:QI 2 "register_operand" "r"))))]
  "TARGET_ZBKB"
  "packh\t%0,%2,%1"
  [(set_attr "type" "crypto")])
@@ -163,10 +164,11 @@
 ;; allows later code to eliminate subsequent explicit sign extensions.
 (define_split
   [(set (match_operand:DI 0 "register_operand")
-	(ior:DI (ashift:DI
-		  (sign_extend:DI (match_operand:HI 1 "register_operand"))
-		  (const_int 16))
-		(zero_extend:DI (match_operand:HI 2 "register_operand"))))]
+	(any_or_plus:DI
+	  (ashift:DI
+	    (sign_extend:DI (match_operand:HI 1 "register_operand"))
+	    (const_int 16))
+	  (zero_extend:DI (match_operand:HI 2 "register_operand"))))]
   "TARGET_ZBKB && TARGET_64BIT"
   [(set (match_dup 0)
 	(sign_extend:DI (ior:SI (ashift:SI (match_dup 1) (const_int 16))
@@ -175,10 +177,11 @@
 
 (define_split
   [(set (match_operand:DI 0 "register_operand")
-	(ior:DI (zero_extend:DI (match_operand:HI 1 "register_operand"))
-		(ashift:DI
-		  (sign_extend:DI (match_operand:HI 2 "register_operand"))
-		  (const_int 16))))]
+	(any_or_plus:DI
+	  (zero_extend:DI (match_operand:HI 1 "register_operand"))
+	  (ashift:DI
+	    (sign_extend:DI (match_operand:HI 2 "register_operand"))
+	    (const_int 16))))]
   "TARGET_ZBKB && TARGET_64BIT"
   [(set (match_dup 0)
 	(sign_extend:DI (ior:SI (ashift:SI (match_dup 2) (const_int 16))
@@ -187,10 +190,11 @@
 
 (define_split
   [(set (match_operand:DI 0 "register_operand")
-	(ior:DI (sign_extend:DI
-		  (ashift:SI (match_operand:SI 1 "register_operand")
-			     (const_int 16)))
-		(zero_extend:DI (match_operand:HI 2 "register_operand"))))]
+	(any_or_plus:DI
+	  (sign_extend:DI
+	    (ashift:SI (match_operand:SI 1 "register_operand")
+		       (const_int 16)))
+	  (zero_extend:DI (match_operand:HI 2 "register_operand"))))]
   "TARGET_ZBKB && TARGET_64BIT"
   [(set (match_dup 0)
 	(sign_extend:DI (ior:SI (ashift:SI (match_dup 1) (const_int 16))
@@ -198,10 +202,11 @@
 
 (define_split
   [(set (match_operand:DI 0 "register_operand")
-	(ior:DI (zero_extend:DI (match_operand:HI 1 "register_operand"))
-		(sign_extend:DI
-		  (ashift:SI (match_operand:SI 2 "register_operand")
-			     (const_int 16)))))]
+	(any_or_plus:DI
+	  (zero_extend:DI (match_operand:HI 1 "register_operand"))
+	  (sign_extend:DI
+	    (ashift:SI (match_operand:SI 2 "register_operand")
+		       (const_int 16)))))]
   "TARGET_ZBKB && TARGET_64BIT"
   [(set (match_dup 0)
 	(sign_extend:DI (ior:SI (ashift:SI (match_dup 2) (const_int 16))
@@ -211,7 +216,7 @@
 (define_insn "*riscv_packw_2"
   [(set (match_operand:DI 0 "register_operand" "=r")
 	(sign_extend:DI
-	  (ior:SI
+	  (any_or_plus:SI
 	    (ashift:SI (match_operand:SI 1 "register_operand" "r")
 		       (const_int 16))
 	    (zero_extend:SI (match_operand:HI 2 "register_operand" "r")))))]

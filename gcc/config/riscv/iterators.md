@@ -277,6 +277,12 @@
 ; atomics code iterator
 (define_code_iterator any_atomic [plus ior xor and])
 
+;; Code iterator for any-or-plus (AOP) operations.
+(define_code_iterator any_or_plus [plus ior xor])
+
+;; Name prefix for any_or_plus insns: only the IOR form keeps a gen_* function.
+(define_code_attr aop_pref_ior [(ior "") (xor "*") (plus "*")])
+
 ; bitmanip code iterators
 (define_code_iterator bitmanip_bitwise [and ior])
 

@@ -4513,6 +4513,55 @@ riscv_extend_cost (rtx op, bool unsigned_p)
   return COSTS_N_INSNS (2);
 }
 
+/* Return true if X in mode MODE matches a zbkb pack, packh, or packw
+   pattern.  */
+
+static bool
+riscv_zbkb_pack_cost_p (rtx x, machine_mode mode)
+{
+  if (!TARGET_ZBKB)
+    return false;
+
+  /* packh for zbkb: ((ashift reg 8) & 0xff00)
+     | (zero_extend:word_mode reg:QI).  */
+  if (GET_CODE (XEXP (x, 0)) == AND
+      && GET_CODE (XEXP (XEXP (x, 0), 0)) == ASHIFT
+      && register_operand (XEXP (XEXP (XEXP (x, 0), 0), 0), word_mode)
+      && CONST_INT_P (XEXP (XEXP (XEXP (x, 0), 0), 1))
+      && INTVAL (XEXP (XEXP (XEXP (x, 0), 0), 1)) == 8
+      && CONST_INT_P (XEXP (XEXP (x, 0), 1))
+      && INTVAL (XEXP (XEXP (x, 0), 1)) == 0xff00
+      && GET_CODE (XEXP (x, 1)) == ZERO_EXTEND
+      && GET_MODE (XEXP (x, 1)) == word_mode
+      && GET_MODE (XEXP (XEXP (x, 1), 0)) == QImode)
+    return true;
+
+  /* pack for zbkb: (ashift:X reg BITS_PER_WORD/2) | (zero_extend:X reg:HX).  */
+  if (mode == word_mode
+      && GET_CODE (XEXP (x, 0)) == ASHIFT
+      && register_operand (XEXP (XEXP (x, 0), 0), word_mode)
+      && CONST_INT_P (XEXP (XEXP (x, 0), 1))
+      && INTVAL (XEXP (XEXP (x, 0), 1)) == BITS_PER_WORD / 2
+      && GET_CODE (XEXP (x, 1)) == ZERO_EXTEND
+      && GET_MODE (XEXP (x, 1)) == word_mode
+      && GET_MODE (XEXP (XEXP (x, 1), 0)) == (TARGET_64BIT ? SImode : HImode))
+    return true;
+
+  /* packw for zbkb on rv64: (ashift:SI reg 16) | (zero_extend:SI reg:HI).  */
+  if (TARGET_64BIT
+      && mode == SImode
+      && GET_CODE (XEXP (x, 0)) == ASHIFT
+      && register_operand (XEXP (XEXP (x, 0), 0), SImode)
+      && CONST_INT_P (XEXP (XEXP (x, 0), 1))
+      && INTVAL (XEXP (XEXP (x, 0), 1)) == 16
+      && GET_CODE (XEXP (x, 1)) == ZERO_EXTEND
+      && GET_MODE (XEXP (x, 1)) == SImode
+      && GET_MODE (XEXP (XEXP (x, 1), 0)) == HImode)
+    return true;
+
+  return false;
+}
+
 /* Implement TARGET_RTX_COSTS.  */
 
 #define SINGLE_SHIFT_COST 1
@@ -4759,21 +4808,7 @@ riscv_rtx_costs (rtx x, machine_mode mode, int outer_code, int opno ATTRIBUTE_UN
       gcc_fallthrough ();
     case IOR:
     case XOR:
-      /* packh for zbkb.  Alternate forms haven't shown up as a
-	 costing problem.  Obviously we can add the additional
-	 variants if needed.  */
-      if (TARGET_ZBKB
-	  && GET_CODE (x) == IOR
-	  && GET_CODE (XEXP (x, 0)) == AND
-	  && GET_CODE (XEXP (XEXP (x, 0), 0)) == ASHIFT
-	  && register_operand (XEXP (XEXP (XEXP (x, 0), 0), 0), word_mode)
-	  && CONST_INT_P (XEXP (XEXP (XEXP (x, 0), 0), 1))
-	  && INTVAL (XEXP (XEXP (XEXP (x, 0), 0), 1)) == 8
-	  && CONST_INT_P (XEXP (XEXP (x, 0), 1))
-	  && INTVAL (XEXP (XEXP (x, 0), 1)) == 0xff00
-	  && GET_CODE (XEXP (x, 1)) == ZERO_EXTEND
-	  && GET_MODE (XEXP (x, 1)) == word_mode
-	  && GET_MODE (XEXP (XEXP (x, 1), 0)) == QImode)
+      if (riscv_zbkb_pack_cost_p (x, mode))
 	{
 	  *total = COSTS_N_INSNS (1);
 	  return true;
@@ -4960,6 +4995,12 @@ riscv_rtx_costs (rtx x, machine_mode mode, int outer_code, int opno ATTRIBUTE_UN
       return false;
 
     case PLUS:
+      if (riscv_zbkb_pack_cost_p (x, mode))
+	{
+	  *total = COSTS_N_INSNS (1);
+	  return true;
+	}
+
       /* add.uw pattern for zba.  */
       if (TARGET_ZBA
 	  && (TARGET_64BIT && (mode == DImode))
