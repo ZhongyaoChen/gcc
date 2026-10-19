@@ -492,6 +492,7 @@ along with GCC; see the file COPYING3.  If not see
              integer_zerop)
 	 INTEGER_CST@2
 	 (plus (nop_convert @0) integer_all_onesp@1)))
+  (if (types_match (type, @0))
    (with
     {
      unsigned precision = TYPE_PRECISION (type);
@@ -499,9 +500,43 @@ along with GCC; see the file COPYING3.  If not see
      wide_int c2 = wi::to_wide (@2);
      wide_int sum = wi::add (c1, c2);
     }
-    /* The outer conversion must not change the type of X.  */
-    (if (types_match (type, @0)
-	 && wi::eq_p (sum, wi::max_value (precision, SIGNED))))))
+    (if (wi::eq_p (sum, wi::max_value (precision, SIGNED)))))))
+
+(match (signed_integer_sat_add @0 @1)
+  /* The canonical form simplified from (X & -X) < 0:
+     (X == INT_MIN) ? INT_MIN : (X - 1).  */
+  (convert (cond^ (eq (nop_convert? @0) INTEGER_CST@3)
+	   INTEGER_CST@2
+	   (plus (nop_convert @0) integer_all_onesp@1)))
+  (if (types_match (type, @0))
+   (with
+    {
+     unsigned precision = TYPE_PRECISION (type);
+     wide_int min_val = wi::min_value (precision, SIGNED);
+     wide_int c1 = wi::to_wide (@1);
+     wide_int c2 = wi::to_wide (@2);
+     wide_int sum = wi::add (c1, c2);
+    }
+    (if (wi::eq_p (sum, wi::max_value (precision, SIGNED))
+	 && wi::eq_p (wi::to_wide (@3), min_val))))))
+
+(match (signed_integer_sat_add @0 @1)
+  /* The canonical form simplified from (X & -X) >= 0:
+     (X != INT_MIN) ? (X - 1) : INT_MIN.  */
+  (convert (cond^ (ne (nop_convert? @0) INTEGER_CST@3)
+	   (plus (nop_convert @0) integer_all_onesp@1)
+	   INTEGER_CST@2))
+  (if (types_match (type, @0))
+   (with
+    {
+     unsigned precision = TYPE_PRECISION (type);
+     wide_int min_val = wi::min_value (precision, SIGNED);
+     wide_int c1 = wi::to_wide (@1);
+     wide_int c2 = wi::to_wide (@2);
+     wide_int sum = wi::add (c1, c2);
+    }
+    (if (wi::eq_p (sum, wi::max_value (precision, SIGNED))
+	 && wi::eq_p (wi::to_wide (@3), min_val))))))
 
 (match (signed_integer_sat_add @0 @1)
   /* T SUM = (T)((UT)X + (UT)IMM)
