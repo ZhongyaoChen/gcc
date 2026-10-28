@@ -1528,7 +1528,13 @@ costs::adjust_stmt_cost (enum vect_cost_for_stmt kind, loop_vec_info loop,
     {
       unsigned lmul_factor = get_lmul_cost_scaling (TYPE_MODE (vectype));
       if (lmul_factor > 1)
-	stmt_cost *= lmul_factor;
+	{
+	  /* vec_perm like vrgather usually scale quadratically with LMUL.  */
+	  if (kind == vec_perm)
+	    stmt_cost *= lmul_factor * lmul_factor;
+	  else
+	    stmt_cost *= lmul_factor;
+	}
     }
 
   return stmt_cost;
