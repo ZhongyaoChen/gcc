@@ -1523,8 +1523,10 @@ costs::adjust_stmt_cost (enum vect_cost_for_stmt kind, loop_vec_info loop,
 
   /* Apply LMUL cost scaling uniformly to all vector operations.
      Larger LMUL values have higher latency and register pressure,
-     which affects performance regardless of loop structure.  */
-  if (VECTOR_TYPE_P (vectype))
+     which affects performance regardless of loop structure.
+     Permutes have already looked up their per-LMUL cost table in
+     builtin_vectorization_cost.  */
+  if (VECTOR_TYPE_P (vectype) && kind != vec_perm)
     {
       unsigned lmul_factor = get_lmul_cost_scaling (TYPE_MODE (vectype));
       if (lmul_factor > 1)
