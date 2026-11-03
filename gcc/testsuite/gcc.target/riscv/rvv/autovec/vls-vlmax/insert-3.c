@@ -38,4 +38,5 @@ f_vnx16df (double a, double b, double c, double d, double e, double f,
   *(vnx16df *) out = v;
 }
 
-/* { dg-final { scan-assembler-times {vfslide1down\.vf\tv[0-9]+,\s*v[0-9]+,\s*[a-x0-9]+} 26 } } */
+/* { dg-final { scan-assembler-times {vfmv\.v\.f\tv[0-9]+,\s*[fa0-9]+} 15 } } */
+/* { dg-final { scan-assembler-times {vfslide1down\.vf\tv[0-9]+,\s*v[0-9]+,\s*[a-x0-9]+} 15 } } */

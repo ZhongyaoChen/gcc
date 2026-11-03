@@ -38,4 +38,5 @@ f_vnx16di (int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f,
   *(vnx16di *) out = v;
 }
 
-/* { dg-final { scan-assembler-times {vslide1down\.vx\tv[0-9]+,\s*v[0-9]+,\s*[a-x0-9]+} 52 } } */
+/* { dg-final { scan-assembler-times {vlse64\.v\tv[0-9]+,\s*0\([a-x0-9]+\),\s*zero} 15 } } */
+/* { dg-final { scan-assembler-times {vslide1down\.vx\tv[0-9]+,\s*v[0-9]+,\s*[a-x0-9]+} 30 } } */

@@ -1165,20 +1165,76 @@ expand_vec_series (rtx dest, rtx base, rtx step, rtx vid)
 }
 
 /* Subroutine of riscv_vector_expand_vector_init.
-   Works as follows:
-   (a) Initialize TARGET by broadcasting element NELTS_REQD - 1 of BUILDER.
-   (b) Skip leading elements from BUILDER, which are the same as
-       element NELTS_REQD - 1.
-   (c) Insert earlier elements in reverse order in TARGET using vslide1down.  */
+   Build the vector as a tree so slides can run in parallel:
+
+     el1   el2     el3   el4
+      \   /	    \   /	(half modes)
+      el1 el2       el3 el4
+	 \	     /		(target mode)
+	el1 el2 el3 el4
+
+   Recursively split the vector into two halves:
+   - LMUL > 1: build each half in a subreg of target.
+   - LMUL <= 1: build each half in a temporary and merge using gen_vec_concat.
+
+   When it cannot be split further, broadcast element 0 and insert
+   the rest with vslide1down.  */
 
 static void
 expand_vector_init_insert_elems (rtx target, const rvv_builder &builder,
 				 int nelts_reqd)
 {
   machine_mode mode = GET_MODE (target);
+  int ndups = builder.count_dups (0, nelts_reqd, 1);
+  machine_mode half_mode;
+  bool lmul_gt1_p
+    = known_gt (GET_MODE_SIZE (mode), riscv_regmode_natural_size (mode));
+  bool can_split_p
+    = ndups < nelts_reqd / 2
+      && !optimize_insn_for_size_p ()
+      && known_eq (GET_MODE_NUNITS (mode), nelts_reqd)
+      && get_vector_mode (GET_MODE_INNER (mode),
+			  nelts_reqd / 2).exists (&half_mode)
+      && targetm.can_change_mode_class (mode, half_mode, V_REGS)
+      && (lmul_gt1_p
+	  || convert_optab_handler (vec_init_optab, mode, half_mode)
+	     != CODE_FOR_nothing);
+  if (can_split_p)
+    {
+      int half = nelts_reqd / 2;
+      rvv_builder low_builder (half_mode, half, 1);
+      rvv_builder high_builder (half_mode, half, 1);
+      for (int i = 0; i < half; i++)
+	{
+	  low_builder.quick_push (builder.elt (i));
+	  high_builder.quick_push (builder.elt (i + half));
+	}
+      low_builder.finalize ();
+      high_builder.finalize ();
+
+      if (lmul_gt1_p)
+	{
+	  if (!SUBREG_P (target))
+	    emit_clobber (target);
+	  rtx low = simplify_gen_subreg (half_mode, target, mode, 0);
+	  rtx high = simplify_gen_subreg (half_mode, target, mode,
+					  GET_MODE_SIZE (half_mode));
+	  expand_vector_init_insert_elems (low, low_builder, half);
+	  expand_vector_init_insert_elems (high, high_builder, half);
+	}
+      else
+	{
+	  rtx low = gen_reg_rtx (half_mode);
+	  rtx high = gen_reg_rtx (half_mode);
+	  expand_vector_init_insert_elems (low, low_builder, half);
+	  expand_vector_init_insert_elems (high, high_builder, half);
+	  emit_insn (gen_vec_concat (mode, target, low, high));
+	}
+      return;
+    }
+
   rtx dup = expand_vector_broadcast (mode, builder.elt (0));
   emit_move_insn (target, dup);
-  int ndups = builder.count_dups (0, nelts_reqd - 1, 1);
   for (int i = ndups; i < nelts_reqd; i++)
     {
       unsigned int unspec
