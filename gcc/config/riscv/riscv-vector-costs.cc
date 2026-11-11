@@ -1498,6 +1498,21 @@ costs::adjust_stmt_cost (enum vect_cost_for_stmt kind, loop_vec_info loop,
 	  break;
 	}
 
+    case scalar_load:
+    case scalar_store:
+      if (node
+	  && SLP_TREE_MEMORY_ACCESS_TYPE (node) == VMAT_GATHER_SCATTER_IFN)
+	{
+	  const common_vector_cost *common_costs
+	    = riscv_vla_mode_p (TYPE_MODE (vectype))
+	      ? costs->vla : costs->vls;
+	  if (kind == scalar_load)
+	    stmt_cost = common_costs->gather_load_cost;
+	  else
+	    stmt_cost = common_costs->scatter_store_cost;
+	}
+      break;
+
     default:
       break;
     }
@@ -1616,6 +1631,18 @@ costs::add_stmt_cost (int count, vect_cost_for_stmt kind,
 
   stmt_cost = scale_vector_cost (kind, loop_vinfo, stmt_info, node,
 				 vectype, where, stmt_cost);
+
+  /* Gather loads and scatter stores are costed as a single scalar_load
+     or scalar_store for each element.  We therefore need to divide the
+     full-instruction cost by the number of elements in the vector.  */
+  if (m_cost_type != SCALAR_COST
+      && vectype
+      && (kind == scalar_load || kind == scalar_store)
+      && node
+      && SLP_TREE_MEMORY_ACCESS_TYPE (node) == VMAT_GATHER_SCATTER_IFN)
+    return record_stmt_cost (stmt_info, where,
+			     CEIL (count * stmt_cost,
+				   vect_nunits_for_cost (vectype)));
 
   return record_stmt_cost (stmt_info, where, count * stmt_cost);
 }
