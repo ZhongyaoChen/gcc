@@ -1620,6 +1620,35 @@ costs::add_stmt_cost (int count, vect_cost_for_stmt kind,
   return record_stmt_cost (stmt_info, where, count * stmt_cost);
 }
 
+unsigned int
+costs::add_slp_cost (slp_tree node,
+		     const array_slice<stmt_info_for_cost> &cost_vec)
+{
+  unsigned int sum = 0;
+  for (auto item : cost_vec)
+    {
+      /* Cost true IFN gather/scatters as vector ops instead of scalar
+	 lanes, using the actual vectype (e.g. after type punning).  */
+      if (SLP_TREE_MEMORY_ACCESS_TYPE (node) == VMAT_GATHER_SCATTER_IFN
+	  && (item.kind == scalar_load || item.kind == scalar_store))
+	{
+	  auto *ls = static_cast<vect_load_store_data *> (node->data);
+	  item.vectype = ls->ls_type ? ls->ls_type : SLP_TREE_VECTYPE (node);
+	  if (STMT_VINFO_GATHER_SCATTER_P (item.stmt_info))
+	    {
+	      item.kind = (item.kind == scalar_load
+			   ? vector_gather_load : vector_scatter_store);
+	      unsigned int cnunits = vect_nunits_for_cost (item.vectype);
+	      item.count = CEIL (item.count, cnunits);
+	    }
+	}
+      sum += ::add_stmt_cost (this, item.count, item.kind, item.stmt_info,
+			      item.node, item.vectype, item.misalign,
+			      item.where);
+    }
+  return sum;
+}
+
 unsigned
 costs::scale_vector_cost (enum vect_cost_for_stmt kind,
 			  loop_vec_info loop_vinfo,
