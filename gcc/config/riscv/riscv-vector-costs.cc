@@ -1585,9 +1585,9 @@ costs::add_stmt_cost (int count, vect_cost_for_stmt kind,
 	vectype = TREE_TYPE (lhs);
     }
 
-  if (stmt_info && where == vect_body
+  if (stmt_info && node && where == vect_body
       && m_cost_type != SCALAR_COST)
-    record_type_sizes (kind, stmt_info, vectype);
+    record_type_sizes (kind, stmt_info, SLP_TREE_VECTYPE (node));
 
   int stmt_cost
     = targetm.vectorize.builtin_vectorization_cost (kind, vectype, misalign);
